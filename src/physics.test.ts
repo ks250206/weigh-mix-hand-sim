@@ -83,3 +83,19 @@ test('a moving grip release carries momentum through the game loop, with an inde
   assert.equal(next.objects.cap.y, HOME.cap.y)
   assert.equal(next.anger, 0)
 })
+
+test('folding removes the unused corners from the physical collision footprint', () => {
+  function cornerContact(count: 0 | 1 | 2, x: number, y: number) {
+    const s = startGame()
+    const sheet = s.objects.foilB
+    Object.assign(sheet, { x: 0.46, y: 0.7, foldCount: count, folded: count === 2 })
+    Object.assign(s.objects.cap, { x: sheet.x + x / 1200, y: sheet.y + y / 650 })
+    const table = new TablePhysics(s)
+    table.step(s, s.hand, dt)
+    return Math.hypot((sheet.x - 0.46) * 1200, (sheet.y - 0.7) * 650)
+  }
+  assert.ok(cornerContact(0, 38, -38) > 1, 'flat square contacts a cap at its right rear corner')
+  assert.ok(cornerContact(1, 38, -38) < 0.01, 'first crease clears the folded half')
+  assert.ok(cornerContact(1, -42, 40) > 1, 'first triangle retains its outer corner')
+  assert.ok(cornerContact(2, -42, 40) < 0.01, 'four-layer packet has the smallest footprint')
+})

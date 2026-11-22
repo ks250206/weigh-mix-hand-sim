@@ -153,6 +153,11 @@ export class Forms {
     return this.mesh(parent, this.plane, paint, x, y, z, w, h, 1)
   }
 
+  private shadowGroups = new Map<Container3D, Container3D>()
+  setShadows(visible: boolean) {
+    for (const layer of this.shadowGroups.values()) layer.visible = visible
+  }
+
   private contactShadow?: BaseMaterial3D
 
   shadow(parent: Container3D, width: number, depth: number) {
@@ -165,7 +170,12 @@ export class Forms {
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, 128, 128)
     })
-    const shadow = this.panel(parent, this.contactShadow, 0, 0.016, 0, width, depth)
+    let layer = this.shadowGroups.get(parent)
+    if (!layer) {
+      layer = group(parent)
+      this.shadowGroups.set(parent, layer)
+    }
+    const shadow = this.panel(layer, this.contactShadow, 0, 0.016, 0, width, depth)
     shadow.rotation.x = -Math.PI / 2
     return shadow
   }

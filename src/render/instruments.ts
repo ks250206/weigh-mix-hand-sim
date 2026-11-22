@@ -1,6 +1,8 @@
-import { Container3D, Geometry3D, type Mesh3D } from '@pixi/3d'
-import { LABELS, mass as powderMass, type ObjectId, type Powder, type TableObject } from '../contract'
+import { Container3D, Geometry3D, Quaternion, Vector3, type Mesh3D } from '@pixi/3d'
+import { LABELS, isFoil, mass as powderMass, type ObjectId, type Powder, type TableObject } from '../contract'
 import { Forms, group } from './forms'
+import { foilSheet } from './foil'
+import { toolGrip } from './toolGrip'
 
 const WHITE = 0xd6d9e1,
   METAL = 0x929fb1,
@@ -14,7 +16,9 @@ export interface Instrument {
   root: Container3D
   radius: number
   height: number
-  update?: (obj: TableObject, mass: number, mixed: number, held: boolean, depth: number) => void
+  grip?: ReturnType<typeof toolGrip>
+  tip?: Container3D
+  update?: (obj: TableObject, mass: number, mixed: number, held: boolean, depth: number, lift: number) => void
 }
 
 function powder(f: Forms, p: Container3D, x: number, y: number, z: number, radius: number) {
@@ -173,68 +177,29 @@ function jar(f: Forms, root: Container3D, p: Powder): Instrument {
   }
 }
 
-function sheetGeometry(f: Forms, folded: boolean) {
-  const pos: number[] = [],
-    normals: number[] = []
-  function point(i: number, j: number): [number, number, number] {
-    const x = (i / 6) * 2 - 1,
-      z = (j / 5) * 2 - 1
-    const edge = Math.max(Math.abs(x), Math.abs(z))
-    const ripple = Math.sin(i * 2.32 + j * 1.59) * 0.028 + Math.cos(i * 3.63 - j) * 0.023
-    const crease = folded ? 0 : 0.075 * Math.abs(x - 0.28 * z)
-    return [
-      x * (folded ? 0.43 : 0.7) + ripple * 0.24,
-      0.028 +
-        (folded ? 0.26 * Math.max(0, (edge - 0.61) / 0.39) : 0.07 * edge ** 4) +
-        crease + ripple * (0.22 + 0.65 * edge),
-      z * 0.44 + ripple * 0.22,
-    ]
-  }
-  function tri(a: number[], b: number[], c: number[]) {
-    const dx = b[0] - a[0],
-      dy = b[1] - a[1],
-      dz = b[2] - a[2],
-      ex = c[0] - a[0],
-      ey = c[1] - a[1],
-      ez = c[2] - a[2]
-    const nx = dy * ez - dz * ey,
-      ny = dz * ex - dx * ez,
-      nz = dx * ey - dy * ex,
-      n = Math.hypot(nx, ny, nz)
-    pos.push(...a, ...b, ...c)
-    for (let k = 0; k < 3; k++) normals.push(nx / n, ny / n, nz / n)
-  }
-  for (let i = 0; i < 6; i++)
-    for (let j = 0; j < 5; j++) {
-      const a = point(i, j),
-        b = point(i + 1, j),
-        c = point(i, j + 1),
-        d = point(i + 1, j + 1)
-      tri(a, c, b)
-      tri(b, c, d)
-    }
-  return f.geometry(new Geometry3D({ positions: Float32Array.from(pos), normals: Float32Array.from(normals) }))
-}
-
 export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrument {
   const root = group(parent)
   if (id === 'work') return { root, radius: 0.47, height: 0 }
   if (id === 'jarA' || id === 'jarB' || id === 'jarC')
     return jar(f, root, id === 'jarA' ? 'a' : id === 'jarB' ? 'b' : 'c')
-  if (id === 'foil' || id === 'foil2') {
+  if (isFoil(id)) {
+    const accents = { foil: 0xa94926, foilB: 0x234e9f, foilC: 0xb18a2d, foil2: 0x526877 }
     const paper = group(root)
-    paper.rotation.y = id === 'foil' ? -0.13 : 0.19
-    const mat = f.material(id === 'foil' ? 0x9faab7 : 0xadb6c2, 0.92)
-    const flat = f.mesh(paper, sheetGeometry(f, false), mat)
-    const folded = f.mesh(paper, sheetGeometry(f, true), mat)
-    const dust = powder(f, paper, 0, 0.055, 0, 0.37)
+    const fold = foilSheet(f, paper, accents[id])
+    const dust = powder(f, paper, -0.32, 0.15, 0, 0.22)
+    let finishedAt = 0
     return {
       root,
-      radius: 0.66,
-      height: 0.16,
+      radius: 0.64,
+      height: 0.15,
       update(obj, _mass, mixed) {
-        flat.visible = !obj.folded
-        folded.visible = obj.folded
+        fold(obj.foldCount + obj.foldProgress)
+        // Once the last crease is pressed, align the packet's centroid with the
+        // pickup point and pan center. The guides stay fixed during both strokes.
+        const now = performance.now()
+        if (!obj.folded) finishedAt = 0
+        else if (!finishedAt) finishedAt = now
+        paper.position.x = finishedAt ? 0.32 * Math.min(1, (now - finishedAt) / 220) : 0
         dust(obj, mixed)
       },
     }
@@ -341,9 +306,34 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
   }
   if (id === 'pestle' || id === 'spatula') {
     const tool = group(root)
-    tool.rotation.set(1.43, 0, id === 'pestle' ? -0.75 : 0.83)
+    const pestle = id === 'pestle'
+    const grip = toolGrip(f, tool, id), tip = group(tool)
+    tip.position.y = pestle ? 1.2 : 1.36
+    const resting = new Quaternion().setFromEuler({ x: 1.43, y: 0, z: pestle ? -0.75 : 0.83 })
+    const origin = pestle ? new Vector3(-0.45, 0.13, -0.34) : new Vector3(0.42, 0.09, -0.4)
+    const carrying = new Quaternion(), restGrip = new Vector3(0, grip.frame.position.y, 0).applyQuaternion(resting)
+    const heldGrip = new Vector3(), offset = new Vector3(), rotation = new Quaternion()
+    function pose(held: boolean, depth: number, lift: number) {
+      grip.frame.visible = held
+      if (!held) {
+        tool.quaternion.copyFrom(resting)
+        tool.position.copyFrom(origin)
+        return
+      }
+      const angle = pestle ? -2.86 + 0.12 * depth : -1.91 - 0.54 * depth
+      carrying.setFromAxisAngle({ x: 1, y: 0, z: 0 }, angle)
+      resting.slerp(carrying, lift, rotation)
+      tool.quaternion.copyFrom(rotation)
+      heldGrip.set(0, grip.frame.position.y - tip.position.y, 0).applyQuaternion(carrying)
+      offset.set(0, grip.frame.position.y, 0).applyQuaternion(rotation)
+      // During pickup the shaft turns about the part that's actually in the palm.
+      tool.position.set(
+        (origin.x + restGrip.x) * (1-lift) + heldGrip.x * lift - offset.x,
+        (origin.y + restGrip.y) * (1-lift) + heldGrip.y * lift - offset.y,
+        (origin.z + restGrip.z) * (1-lift) + heldGrip.z * lift - offset.z,
+      )
+    }
     if (id === 'pestle') {
-      tool.position.set(-0.45, 0.13, -0.34)
       f.mesh(
         tool,
         f.profile([
@@ -359,9 +349,8 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
         ]),
         f.material(WHITE, 0.24),
       )
-      return { root, radius: 0.57, height: 0.24 }
+      return { root, grip, tip, radius: 0.57, height: 0.24, update(_obj, _mass, _mixed, held, depth, lift) { pose(held, depth, lift) } }
     }
-    tool.position.set(0.42, 0.09, -0.4)
     f.mesh(
       tool,
       f.profile([
@@ -379,17 +368,12 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
     const dust = powder(f, tool, 0, 1.15, -0.047, 0.1)
     return {
       root,
+      grip,
+      tip,
       radius: 0.56,
       height: 0.16,
-      update(obj, _mass, mixed, held, depth) {
-        if (held) {
-          const angle = -1.91 - depth * 0.54
-          tool.rotation.set(angle, 0, 0)
-          tool.position.set(0, -1.16 * Math.cos(angle), -1.16 * Math.sin(angle))
-        } else {
-          tool.rotation.set(1.43, 0, 0.83)
-          tool.position.set(0.42, 0.09, -0.4)
-        }
+      update(obj, _mass, mixed, held, depth, lift) {
+        pose(held, depth, lift)
         dust(obj, mixed)
       },
     }

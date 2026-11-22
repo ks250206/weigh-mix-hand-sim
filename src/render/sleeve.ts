@@ -1,5 +1,6 @@
 import { Box, Geometry3D, type Container3D } from '@pixi/3d'
 import { Forms, type Paint, type Point3 } from './forms'
+import { inwardNormal } from './chamber'
 
 // Rings follow a cubic from the port's inward normal to the wrist. A single continuous
 // surface keeps the folds joined as the hand stretches or turns across the bench.
@@ -28,15 +29,16 @@ export function sleeve(f: Forms, parent: Container3D, paint: Paint, port: Point3
   f.mesh(parent, geometry, paint)
   const sin = Array.from({ length: sides }, (_, i) => Math.sin((i / sides) * Math.PI * 2))
   const cos = Array.from({ length: sides }, (_, i) => Math.cos((i / sides) * Math.PI * 2))
-  return (wrist: Point3, yaw: number) => {
+  return (wrist: Point3, yaw: number, tangent?: Point3) => {
     const length = Math.hypot(wrist.x - port.x, wrist.z - port.z)
     const bend = Math.min(0.92, length * 0.4)
+    const neck = Math.max(0.55, bend)
     const ax = port.x,
-      ay = port.y + 0.4,
-      az = port.z - bend
-    const bx = wrist.x + Math.sin(yaw) * bend * 0.72,
-      by = wrist.y + 0.05,
-      bz = wrist.z + Math.cos(yaw) * bend * 0.72
+      ay = port.y + inwardNormal.y * neck,
+      az = port.z + inwardNormal.z * neck
+    const bx = wrist.x + (tangent?.x ?? Math.sin(yaw)) * bend * 0.72,
+      by = wrist.y + (tangent ? tangent.y * bend * 0.72 : 0.05),
+      bz = wrist.z + (tangent?.z ?? Math.cos(yaw)) * bend * 0.72
     for (let i = 0; i < rows; i++) {
       const t = i / (rows - 1),
         u = 1 - t
@@ -58,9 +60,10 @@ export function sleeve(f: Forms, parent: Container3D, paint: Paint, port: Point3
         vz = -dy * ux
       const phase = t * Math.PI * 10,
         depth = 0.045 * (1 - 0.65 * t)
-      const radius = 0.205 + 0.275 * u ** 1.3 + depth * Math.sin(phase)
+      const wristRadius = tangent ? 0.177 : 0.205
+      const radius = wristRadius + (0.48 - wristRadius) * u ** 1.3 + depth * Math.sin(phase)
       const slope =
-        (-0.3575 * u ** 0.3 - 0.02925 * Math.sin(phase) + depth * Math.PI * 10 * Math.cos(phase)) / speed
+        (-1.3 * (0.48 - wristRadius) * u ** 0.3 - 0.02925 * Math.sin(phase) + depth * Math.PI * 10 * Math.cos(phase)) / speed
       const inv = 1 / Math.hypot(1, slope)
       for (let j = 0; j < sides; j++) {
         const nx = ux * cos[j] + vx * sin[j],

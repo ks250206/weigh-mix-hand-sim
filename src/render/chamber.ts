@@ -1,4 +1,4 @@
-import type { Container3D } from '@pixi/3d'
+import { Geometry3D, type Container3D } from '@pixi/3d'
 import { workArea } from '../contract'
 import { Forms, group } from './forms'
 
@@ -7,6 +7,73 @@ export const TABLE_DEPTH = 6.5
 export const ANCHOR_HEIGHT = 0.38
 export const worldX = (x: number) => (x - 0.5) * TABLE_WIDTH
 export const worldZ = (y: number) => (y - 0.5) * TABLE_DEPTH
+
+// Local X/Y span the observation glass. Its top leans into the enclosure.
+const windowTilt = -0.38
+const windowBase = { y: -0.22, z: 4.42 }
+const portSpacing = 3.76
+const portHeight = 1.12
+const aperture = 0.485
+export const inwardNormal = { x: 0, y: Math.sin(windowTilt), z: -Math.cos(windowTilt) }
+export function glovePort(side: -1 | 1) {
+  return {
+    x: side * portSpacing,
+    y: windowBase.y + portHeight * Math.cos(windowTilt),
+    z: windowBase.z + portHeight * Math.sin(windowTilt),
+  }
+}
+
+// Each half pane is meshed from the circular opening to the rectangle around it.
+// Sampling the four rectangle edges explicitly preserves the corners at the sill.
+function glazing(f: Forms, side: -1 | 1) {
+  const vertices: number[] = [], indices: number[] = []
+  const center = side * portSpacing
+  const lo = side < 0 ? -6.78 : 0, hi = side < 0 ? 0 : 6.78
+  const corners = [[lo, 0], [hi, 0], [hi, 4.6], [lo, 4.6]]
+  for (let edge = 0; edge < 4; edge++) {
+    const [ax, ay] = corners[edge], [bx, by] = corners[(edge + 1) % 4]
+    const start = Math.atan2(ay - portHeight, ax - center)
+    let span = Math.atan2(by - portHeight, bx - center) - start
+    if (span < 0) span += 2 * Math.PI
+    for (let i = 0; i <= 16; i++) {
+      const angle = start + span * i / 16, dx = Math.cos(angle), dy = Math.sin(angle)
+      const length = ax === bx ? (ax - center) / dx : (ay - portHeight) / dy
+      const k = vertices.length / 3
+      vertices.push(center + aperture * dx, portHeight + aperture * dy, 0, center + length * dx, portHeight + length * dy, 0)
+      if (i < 16) indices.push(k, k + 1, k + 2, k + 1, k + 3, k + 2)
+    }
+  }
+  return f.geometry(new Geometry3D({ positions: Float32Array.from(vertices), indices: Uint16Array.from(indices) }))
+}
+
+function frontWindow(f: Forms, root: Container3D) {
+  const pane = group(root)
+  pane.position.set(0, windowBase.y, windowBase.z)
+  pane.rotation.x = windowTilt
+  f.box(pane, 0x253b67, 0, -0.01, 0, 13.68, 0.48, 0.25)
+  f.box(pane, 0xb7c7d5, 0, 0.285, 0, 13.56, 0.12, 0.19)
+  f.box(pane, 0x63788e, 0, 0.36, 0, 13.56, 0.03, 0.12)
+  const flange = f.profile([
+    [aperture, -0.08], [0.68, -0.08], [0.716, -0.045], [0.716, 0.05],
+    [0.691, 0.083], [aperture, 0.083], [aperture, -0.08],
+  ], 64)
+  const lip = f.profile([[0.46, 0.05], [0.52, 0.05], [0.535, 0.078],
+    [0.515, 0.105], [0.46, 0.105], [0.46, 0.05]], 64)
+  for (const side of [-1, 1] as const) {
+    f.mesh(pane, glazing(f, side), f.ink(0xc8e8f7, 0.055))
+    f.box(pane, 0x4f6689, side * 6.76, 2.30, 0, 0.10, 4.6, 0.14)
+    const mount = group(pane)
+    mount.position.set(side * portSpacing, portHeight, 0)
+    mount.rotation.x = Math.PI / 2
+    f.mesh(mount, flange, f.material(0x9eafc1, 0.55))
+    f.mesh(mount, lip, f.material(0x263341, 0.22))
+    for (let i = 0; i < 10; i++) {
+      const angle = (i * 2 * Math.PI) / 10
+      const x = 0.621 * Math.cos(angle), z = 0.621 * Math.sin(angle)
+      f.disc(mount, 0x46576b, x, 0.091, z, 0.034, 0.025)
+    }
+  }
+}
 
 function deckSurface(f: Forms) {
   return f.decal(1536, 860, (c) => {
@@ -199,21 +266,6 @@ export function chamber(f: Forms, root: Container3D) {
     c.fillText('ARGON', 72, 33)
   })
   f.panel(root, gasPlate, 5.81, 1.61, -3.728, 0.68, 0.18)
-  // Front retaining sill and the two sealed entry ports frame the observation window.
-  f.box(root, 0x213fb3, 0, -0.25, 3.89, 13.66, 0.53, 0.23)
-  f.box(root, f.ink(0x244ec5), 0, -0.18, 4.012, 13.58, 0.22, 0.016)
-  f.box(root, 0xc3cfdf, 0, 0.04, 3.85, 13.58, 0.07, 0.2)
-  for (const side of [-1, 1]) {
-    const port = group(root)
-    port.position.set(side * 3.76, 0.14, 3.75)
-    port.rotation.x = -0.2
-    f.disc(port, 0x526684, 0, 0, 0, 0.73, 0.19)
-    f.disc(port, 0xb7c6db, 0, 0.105, 0, 0.66, 0.06)
-    f.disc(port, 0x25314a, 0, 0.149, 0, 0.555, 0.058)
-    for (let i = 0; i < 8; i++) {
-      const a = (i * Math.PI) / 4
-      f.disc(port, 0x415476, Math.sin(a) * 0.608, 0.148, Math.cos(a) * 0.608, 0.035, 0.025)
-    }
-  }
+  frontWindow(f, root)
   return pilot
 }

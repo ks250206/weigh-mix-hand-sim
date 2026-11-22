@@ -1,14 +1,24 @@
 // Register the 3D renderer pipes before Pixi initializes the WebGL backend.
-import { AmbientLight, DirectionalLight, Plane, Vector3, View3D, type Mesh3D } from '@pixi/3d'
+import { AmbientLight, DirectionalLight, Plane, SphereGeometry, Vector3, View3D, type Mesh3D } from '@pixi/3d'
 import { Application } from 'pixi.js'
-import { HOME, LABELS, type GameState, type ObjectId, type Station } from './contract'
+import { FxaaEffect } from '@pixi/3d/extras'
+import { defaultGraphics, type GraphicsSettings } from './graphics'
+import { PowderPhysics } from './powder'
+import { foldingFoil, foldStroke, foilIds, foilHalfSide, HOME, inWork, isFoil, isTool, toolHandle, isWeighFoil, LABELS, weighFoils, type GameState, type ObjectId, type Station } from './contract'
 import { ANCHOR_HEIGHT, chamber, TABLE_DEPTH, TABLE_WIDTH, worldX, worldZ } from './render/chamber'
 import { Forms } from './render/forms'
+import { sheetHeight } from './render/foil'
 import { glove } from './render/gloves'
+import type { WristPose } from './render/toolGrip'
 import { instrument, powderColors } from './render/instruments'
 
 const ids = Object.keys(HOME) as ObjectId[]
 const limit = (v: number) => Math.max(0, Math.min(1, v))
+function activeFold(s: GameState) {
+  const id = foldingFoil(s.stage)
+  if (s.status !== 'playing' || !id || s.target !== id || s.hand.held || s.objects[id].folded || !inWork(s.objects[id])) return null
+  return s.objects[id]
+}
 const styles = `
 .gb-window {position:absolute;inset:0;overflow:hidden;pointer-events:none;box-shadow:inset 0 0 0 3px #223b67,inset 0 0 0 5px #b7d0fd70,inset 0 7px 16px #1a325b45,inset 0 -4px 10px #182c4a50;z-index:1}
 .gb-window::after {content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(119deg,transparent 2%,#effaff12 2.15%,#eef8ff09 5%,transparent 5.2%,transparent 88%,#e5f5ff10 88.15%,transparent 91%);}
@@ -19,14 +29,20 @@ const styles = `
 .gb-station[data-held] > span {pointer-events:none}
 .gb-station[data-goal] {z-index:4}
 .gb-station[data-goal] > span {color:#ffffff;background:#1747cf;border-color:#ecf6ff}
+.gb-fold-guide {position:absolute;inset:0;pointer-events:none;z-index:5}
+.gb-fold-guide i,.gb-fold-guide b {position:absolute;left:0;top:0}
+.gb-fold-guide i {height:0;border-top:2px dashed #145b8c;transform-origin:left center;filter:drop-shadow(0 1px 0 #fff)}
+.gb-fold-guide b {width:7px;height:7px;margin:-3.5px;background:#e8fcff;border:1.5px solid #095077;border-radius:50%;box-shadow:0 0 0 1px #fff}
 .gb-cursor {position:absolute;top:0;left:0;width:15px;height:15px;margin:-7.5px;border:1.5px solid #ffffff;border-radius:50%;box-shadow:0 0 0 1px #233957e6;pointer-events:none;z-index:2}
 .gb-cursor::after {content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;background:#173eab;border:1px solid #ffffff;box-sizing:content-box;border-radius:50%;transform:translate(-50%,-50%)}
 `
-export async function createScene(host: HTMLElement): Promise<{
+export async function createScene(host: HTMLElement, initialGraphics = defaultGraphics()): Promise<{
+  setGraphics(settings: GraphicsSettings): void
   draw(state: GameState): void
   pick(clientX: number, clientY: number): Station
   destroy(): void
 }> {
+  let graphics = initialGraphics
   const app = new Application()
   await app.init({
     preference: 'webgl',
@@ -34,9 +50,9 @@ export async function createScene(host: HTMLElement): Promise<{
     height: Math.max(1, host.clientHeight),
     autoStart: false,
     autoDensity: true,
-    resolution: Math.min(2, window.devicePixelRatio || 1),
+    resolution: graphics.resolution,
     background: 0xabbcd0,
-    antialias: true,
+    antialias: false,
     powerPreference: 'high-performance',
   })
   const view = new View3D({
@@ -46,8 +62,10 @@ export async function createScene(host: HTMLElement): Promise<{
     environment: null,
     toneMapping: 'none',
     cull: 'cpu',
-    resolution: Math.min(1.5, window.devicePixelRatio || 1),
+    resolution: graphics.resolution,
   })
+  let fxaa: FxaaEffect | undefined
+  if (graphics.antialiasing === 'fxaa') view.passes = [fxaa = new FxaaEffect()]
   view.eventMode = 'none'
   app.stage.addChild(view)
   const f = new Forms(),
@@ -67,10 +85,26 @@ export async function createScene(host: HTMLElement): Promise<{
   const skin = document.createElement('div'),
     style = document.createElement('style'),
     cursor = document.createElement('span')
+  const fpsLabel = document.createElement('output')
+  fpsLabel.setAttribute('aria-label', '描画フレームレート')
+  fpsLabel.style.cssText = 'position:absolute;top:8px;right:8px;color:white;background:#1c3177;padding:3px 6px;font:600 11px monospace'
+  fpsLabel.hidden = !graphics.showFps
+  skin.appendChild(fpsLabel)
+  let frames = 0, fpsStart = 0
   skin.className = 'gb-window'
   style.textContent = styles
   cursor.className = 'gb-cursor'
-  skin.append(style, cursor)
+  const guide = document.createElement('div'), crease = document.createElement('i')
+  guide.className = 'gb-fold-guide'
+  guide.hidden = true
+  guide.setAttribute('aria-hidden', 'true')
+  const foldPoints = ['start', 'end'].map((name) => {
+    const dot = document.createElement('b')
+    dot.dataset.foldPoint = name
+    return dot
+  })
+  guide.append(crease, ...foldPoints)
+  skin.append(style, cursor, guide)
   const position = host.style.position
   if (getComputedStyle(host).position === 'static') host.style.position = 'relative'
   app.canvas.style.display = 'block'
@@ -89,11 +123,16 @@ export async function createScene(host: HTMLElement): Promise<{
     return { id, model, marker, caption, shadow, ax: 0, ay: 0, offset: 0, tagWidth: 0, tagHeight: 0 }
   })
   const goal = f.mesh(root, f.ring, f.ink(0x174edb), 0, 0.034, 0, 1)
-  const particles: Mesh3D[] = []
-  const residue: Mesh3D[] = []
-  let spilled = 0,
-    residueCount = 0
+  const powderWorld = new PowderPhysics()
+  f.setShadows(graphics.shadows)
+  powderWorld.setDetail(graphics.particles)
+  const grainShape = f.geometry(new SphereGeometry({ radius: 1, widthSegments: 7, heightSegments: 5 }))
+  const grainMeshes: Mesh3D[] = []
+  let previousRound: GameState | undefined
+  let previousRemaining = 0
   const plane = new Plane(new Vector3(0, 1, 0), -ANCHOR_HEIGHT)
+  const handlePlane = new Plane(new Vector3(0, 1, 0), -0.15)
+  const sheetPlane = new Plane(new Vector3(0, 1, 0), -sheetHeight)
   const powderSurface = new Plane(new Vector3(0, 1, 0), -1.11)
   const jarLid = new Plane(new Vector3(0, 1, 0), -1.415)
   const shieldRoof = new Plane(new Vector3(0, 1, 0), -1.58)
@@ -105,7 +144,7 @@ export async function createScene(host: HTMLElement): Promise<{
   const resize = () => {
     width = Math.max(1, host.clientWidth)
     height = Math.max(1, host.clientHeight)
-    app.renderer.resize(width, height)
+    app.renderer.resize(width, height, graphics.resolution)
     view.width = width
     view.height = height
     view.camera.mode = 'perspective'
@@ -132,20 +171,35 @@ export async function createScene(host: HTMLElement): Promise<{
   resize()
 
   function pick(clientX: number, clientY: number): Station {
-    // Captions can be selected directly; every other pixel is a real ray/plane intersection.
-    const label = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.gb-station')
-    const id = label?.dataset.station as ObjectId | undefined
-    if (id && label && skin.contains(label) && last) {
-      const { x, y } = last.objects[id]
-      return { x, y }
-    }
     const rect = app.canvas.getBoundingClientRect()
     const pixel = {
       x: ((clientX - rect.left) * width) / (rect.width || 1),
       y: ((clientY - rect.top) * height) / (rect.height || 1),
     }
+    const sheet = last && activeFold(last)
+    if (sheet) {
+      const surface = view.screenToWorld(pixel, sheetPlane, point)
+      if (surface && Math.hypot(surface.x - worldX(sheet.x), surface.z - worldZ(sheet.y)) < 1.02)
+        return { x: surface.x / TABLE_WIDTH + 0.5, y: surface.z / TABLE_DEPTH + 0.5 }
+    }
+    // Captions select their own instrument. Folding uses the actual paper surface,
+    // including where a nearby label or the animated hand crosses the crease.
+    const label = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.gb-station')
+    const id = label?.dataset.station as ObjectId | undefined
+    if (id && label && skin.contains(label) && last) {
+      if (isTool(id) && last.hand.held !== id) return toolHandle(id, last.objects[id])
+      const { x, y } = last.objects[id]
+      return { x, y }
+    }
     // Raised lids and the draft shield project well behind their tabletop anchors.
     if (last) {
+      if (!last.hand.held) {
+        const hit = view.screenToWorld(pixel, handlePlane, point)
+        if (hit) for (const id of ['spatula', 'pestle'] as const) {
+          const handle = toolHandle(id, last.objects[id])
+          if (Math.hypot(hit.x - worldX(handle.x), hit.z - worldZ(handle.y)) < 0.25) return handle
+        }
+      }
       for (const id of ['jarA', 'jarB', 'jarC'] as const) {
         const jar = last.objects[id]
         if (last.hand.held === id || jar.toppled) continue
@@ -161,6 +215,16 @@ export async function createScene(host: HTMLElement): Promise<{
       if (roof && Math.abs(roof.x - worldX(scale.x)) <= 0.75 &&
         Math.abs(roof.z - worldZ(scale.y) + 0.12) <= 0.58)
         return { x: scale.x, y: scale.y }
+      if (!last.hand.held) {
+        const surface = view.screenToWorld(pixel, sheetPlane, point)
+        if (surface) for (const id of foilIds) {
+          const foil = last.objects[id], angle = foil.yaw ?? 0
+          const dx = surface.x - worldX(foil.x), dz = surface.z - worldZ(foil.y)
+          const localX = dx * Math.cos(angle) - dz * Math.sin(angle)
+          const localZ = dz * Math.cos(angle) + dx * Math.sin(angle)
+          if (Math.max(Math.abs(localX), Math.abs(localZ)) <= foilHalfSide) return { x: foil.x, y: foil.y }
+        }
+      }
     }
     const hit = view.screenToWorld(pixel, plane, point)
     return hit
@@ -173,7 +237,7 @@ export async function createScene(host: HTMLElement): Promise<{
     let best = 0.106
     hovering = null
     for (const id of ids) {
-      const o = last.objects[id],
+      const o = isTool(id) && last.hand.held !== id ? toolHandle(id, last.objects[id]) : last.objects[id],
         d = Math.hypot(o.x - p.x, o.y - p.y)
       if (d < best) {
         best = d
@@ -192,7 +256,7 @@ export async function createScene(host: HTMLElement): Promise<{
       if (entry.marker.hidden) continue
       const { ax, ay, offset, tagWidth: w, tagHeight: h } = entry
       // On a phone the two foil sheets and the vial/cap sit almost one caption apart.
-      const sideLabel = width < 500 && ['foil', 'foil2', 'vial', 'cap'].includes(entry.id)
+      const sideLabel = width < 500 && (isFoil(entry.id) || entry.id === 'vial' || entry.id === 'cap')
       const preferredX = sideLabel ? (ax < width / 2 ? 1 : -1) * (w / 2 + width * entry.model.radius / 12) : 0
       const preferredY = sideLabel ? 1 : offset
       const candidates = [
@@ -258,6 +322,15 @@ export async function createScene(host: HTMLElement): Promise<{
   function draw(s: GameState) {
     last = s
     const t = performance.now() / 1000
+    if (graphics.showFps) {
+      if (!fpsStart) fpsStart = t
+      frames++
+      if (t - fpsStart >= 0.5) {
+        fpsLabel.textContent = Math.round(frames / (t - fpsStart)) + ' FPS'
+        frames = 0
+        fpsStart = t
+      }
+    }
     const goalId = s.status === 'playing' ? s.target : null
     const held = s.hand.held
     const project = (x: number, y: number, z: number) => view.worldToScreen({ x, y, z })
@@ -274,26 +347,51 @@ export async function createScene(host: HTMLElement): Promise<{
       const reach = limit(1 - Math.hypot(s.hand.x - s.objects.scale.x, s.hand.y - s.objects.scale.y) / 0.14)
       utensilHeight = Math.max(utensilHeight, 0.64 + 0.32 * reach)
     }
+    let grind = 0
+    if (held === 'pestle') {
+      const bowl = s.objects.mortar
+      const r = Math.hypot(hx - worldX(bowl.x), hz - worldZ(bowl.y))
+      grind = bowl.toppled ? 0 : limit((0.73 - r) / 0.20)
+      // Trace the ceramic floor while lifting the working end over the lip.
+      utensilHeight = 0.81 * (1 - grind) + (0.32 + 0.85 * r * r) * grind
+    }
+    let toolWrist: WristPose | undefined
+    let toolTip: { x: number; y: number; z: number } | undefined
     for (const entry of models) {
       const { id, model, marker, shadow } = entry
       const o = s.objects[id],
         x = worldX(o.x),
         z = worldZ(o.y)
       const dockedFoil =
-        id === 'foil' && id !== held && Math.hypot(o.x - s.objects.scale.x, o.y - s.objects.scale.y) < 0.055
+        isWeighFoil(id) && id !== held && Math.hypot(o.x - s.objects.scale.x, o.y - s.objects.scale.y) < 0.055
       const sealedCap =
         id === 'cap' &&
         !s.objects.vial.open &&
         Math.hypot(o.x - s.objects.vial.x, o.y - s.objects.vial.y) < 0.03
-      const y = id === 'spatula' && id === held ? utensilHeight : id === held ? 0.5 : dockedFoil ? 0.515 : 0
+      const heldTool = isTool(id) && id === held
+      const pickup = heldTool ? s.hand.toolPickup : undefined
+      const linear = pickup?.progress ?? 1
+      const lift = linear * linear * (3 - 2 * linear)
+      const y = heldTool ? utensilHeight * lift + 0.14 * Math.sin(lift * Math.PI)
+        : id === held ? 0.5 : dockedFoil ? 0.515 : 0
+      const px = pickup ? (1 - lift) * worldX(pickup.x) + lift * x : x
+      const pz = pickup ? (1 - lift) * worldZ(pickup.y) + lift * z : z
       model.root.visible = !sealedCap
-      model.root.position.set(x, y + (o.toppled ? model.radius * 0.75 : 0), z)
+      model.root.position.set(px, y + (o.toppled ? model.radius * 0.75 : 0), pz)
       model.root.rotation.z = o.toppled ? -Math.sign(o.tilt || 1) * 1.36 : -o.tilt
-      model.root.rotation.y = id === held && id === 'spatula' ? yaw : (o.yaw ?? 0)
-      model.update?.(o, s.scaleMass, s.mixed, id === held, s.scoopDepth)
+      const initialYaw = pickup?.yaw ?? yaw
+      const turn = Math.atan2(Math.sin(yaw - initialYaw), Math.cos(yaw - initialYaw))
+      model.root.rotation.y = heldTool ? initialYaw + lift * turn : (o.yaw ?? 0)
+      model.update?.(o, s.scaleMass, s.mixed, id === held, id === 'pestle' ? grind : s.scoopDepth, lift)
+      if (heldTool) {
+        toolWrist = model.grip?.wrist()
+        toolTip = model.tip?.toGlobal({ x: 0, y: 0, z: 0 })
+      }
       shadow.position.set(x + 0.09, 0.013, z + 0.065)
-      shadow.visible = !dockedFoil && !sealedCap && id !== 'work'
-      const anchor = project(x, ANCHOR_HEIGHT, z)
+      shadow.visible = !heldTool && !dockedFoil && !sealedCap && id !== 'work'
+      const handle = isTool(id) && !heldTool ? toolHandle(id, o) : undefined
+      const anchor = handle ? project(worldX(handle.x), 0.15, worldZ(handle.y))
+        : project(x, isFoil(id) ? y + sheetHeight : ANCHOR_HEIGHT, z)
       const tag = project(x, 0.022, z + model.radius * (width < 500 ? 0.48 : 0.7) + 0.08)
       if (anchor && tag) {
         const transform = 'translate(' + anchor.x.toFixed(2) + 'px,' + anchor.y.toFixed(2) + 'px)'
@@ -305,22 +403,36 @@ export async function createScene(host: HTMLElement): Promise<{
         entry.offset = top ? top.y - anchor.y - entry.tagHeight - 2 : tag.y - anchor.y + 2
       }
       marker.hidden =
-        sealedCap ||
+        heldTool || sealedCap ||
         (id === 'work' && goalId !== 'work') ||
-        (id === 'scale' && s.objects.foil.x === o.x && s.objects.foil.y === o.y && goalId !== 'scale')
+        (id === 'scale' && goalId !== 'scale' && Object.values(weighFoils).some((foil) =>
+          held !== foil && Math.hypot(s.objects[foil].x - o.x, s.objects[foil].y - o.y) < 0.055))
       marker.toggleAttribute('data-held', id === held)
       marker.toggleAttribute('data-goal', id === goalId)
       marker.toggleAttribute('data-focus', id === hovering || id === held)
       if (id === goalId) {
-        goal.position.set(x, 0.036, z)
+        goal.position.set(handle ? worldX(handle.x) : x, 0.036, handle ? worldZ(handle.y) : z)
         const r = model.radius * (1.25 + 0.035 * Math.sin(t * 4))
         goal.scale.set(r, 0.45, r)
+      }
+    }
+    const sheet = activeFold(s)
+    guide.hidden = !sheet
+    if (sheet) {
+      const [a, b] = foldStroke(sheet).map(p => project(worldX(p.x), sheetHeight, worldZ(p.y)))
+      if (a && b) {
+        const at = (p: { x: number; y: number }) => 'translate(' + p.x.toFixed(2) + 'px,' + p.y.toFixed(2) + 'px)'
+        foldPoints[0].style.transform = at(a)
+        foldPoints[1].style.transform = at(b)
+        crease.style.width = Math.hypot(b.x - a.x, b.y - a.y).toFixed(2) + 'px'
+        crease.style.transform = at(a) + ' rotate(' + Math.atan2(b.y - a.y, b.x - a.x) + 'rad)'
       }
     }
     layoutCaptions()
     goal.visible = goalId !== null
     const title = s.status === 'title'
     const idle = title ? 0.1 : 0
+    const tracing = sheet && Math.hypot(hx - worldX(sheet.x), hz - worldZ(sheet.y)) < 1.04
     right(
       hx,
       hz,
@@ -328,7 +440,8 @@ export async function createScene(host: HTMLElement): Promise<{
       s.hand.tilt,
       held ? 0.78 : 0,
       t,
-      held === 'spatula' ? utensilHeight + 0.14 + s.scoopDepth * 0.25 : ANCHOR_HEIGHT,
+      tracing ? 0.11 : ANCHOR_HEIGHT,
+      toolWrist,
     )
     // The free glove braces the vessel while the tool hand scoops or grinds.
     const receiving =
@@ -350,65 +463,67 @@ export async function createScene(host: HTMLElement): Promise<{
       ((brace ? worldZ(brace.y) + 0.1 : 2.35 + Math.sin(t * 1.13) * (0.035 + idle)) - support.z) * blend
     support.height += ((brace ? (held === 'pestle' ? 0.44 : 0.61) : ANCHOR_HEIGHT) - support.height) * blend
     left(support.x, support.z, -0.64, 0.11, brace ? 0.55 : 0.15, t + 0.83, support.height)
-    const target = project(hx, ANCHOR_HEIGHT, hz)
+    const target = toolTip ? project(toolTip.x, toolTip.y, toolTip.z) : project(hx, tracing ? sheetHeight : ANCHOR_HEIGHT, hz)
     cursor.hidden = s.status !== 'playing'
     if (target)
       cursor.style.transform = 'translate(' + target.x.toFixed(2) + 'px,' + target.y.toFixed(2) + 'px)'
     pilot.scale.y = 0.07 + 0.009 * Math.sin(t * 2.5)
-    // A spill leaves powder at the emission point after its airborne particles settle.
-    // Keep the visual on the bench until a new round resets the mass ledger.
-    if (s.spilled < spilled) {
-      for (const spot of residue) spot.visible = false
-      residueCount = 0
-    } else if (s.spilled > spilled) {
-      const source = s.particles.at(-1) ?? s.hand
-      const color = powderColors[s.particles.at(-1)?.kind ?? 'a']
-      const count = Math.max(1, Math.min(7, Math.ceil((s.spilled - spilled) * 28)))
-      for (let i = 0; i < count; i++) {
-        const index = residueCount % 128
-        const spot = residue[index] ?? (residue[index] = f.mesh(root, f.ball, color))
-        const angle = residueCount * 2.39996,
-          radius = 0.12 + 0.31 * Math.abs(Math.sin(residueCount * 1.72))
-        spot.position.set(
-          worldX(source.x) + Math.cos(angle) * radius,
-          0.019,
-          worldZ(source.y) + Math.sin(angle) * radius,
-        )
-        spot.scale.set(0.042 + 0.019 * Math.sin(angle), 0.012, 0.038)
-        spot.material = f.material(color)
-        spot.visible = true
-        residueCount++
-      }
+    if (previousRound !== s) {
+      powderWorld.reset()
+      previousRound = s
+      previousRemaining = s.remaining
     }
-    spilled = s.spilled
-    for (let i = 0; i < Math.max(particles.length, s.particles.length); i++) {
-      const grain = s.particles[i]
-      if (!grain) {
-        particles[i].visible = false
+    powderWorld.advance(s.powderTransfers, s.transferSeq, previousRemaining - s.remaining)
+    previousRemaining = s.remaining
+    const moving = powderWorld.moving, settled = powderWorld.residue
+    const count = moving.length + settled.length
+    for (let i = 0; i < Math.max(count, grainMeshes.length); i++) {
+      if (i >= count) {
+        grainMeshes[i].visible = false
         continue
       }
-      const mesh = particles[i] ?? (particles[i] = f.mesh(root, f.ball, 0xe3d099))
+      const airborne = i < moving.length
+      const grain = airborne ? moving[i] : settled[i - moving.length]
+      const mesh = grainMeshes[i] ?? (grainMeshes[i] = f.mesh(root, grainShape, powderColors[grain.kind]))
       mesh.visible = true
       mesh.material = f.material(powderColors[grain.kind])
-      const age = limit(1 - grain.life / 0.6)
-      mesh.position.set(
-        worldX(grain.x),
-        0.06 + 0.4 * Math.sin(age * Math.PI) + 0.2 * (1 - age),
-        worldZ(grain.y),
-      )
-      mesh.scale.set(0.034, 0.025, 0.038)
+      mesh.position.set(grain.x, grain.y, grain.z)
+      mesh.scale.set(grain.radius, grain.radius * (airborne ? 0.84 : 0.57), grain.radius * 0.91)
     }
     app.render()
   }
   return {
     draw,
     pick,
+    setGraphics(next) {
+      const resolutionChanged = graphics.resolution !== next.resolution
+      if (graphics.antialiasing !== next.antialiasing) {
+        if (next.antialiasing === 'fxaa') fxaa ??= new FxaaEffect()
+        view.passes = next.antialiasing === 'fxaa' && fxaa ? [fxaa] : []
+      }
+      if (graphics.showFps !== next.showFps) {
+        frames = 0
+        fpsStart = 0
+        fpsLabel.hidden = !next.showFps
+        fpsLabel.textContent = ''
+      }
+      graphics = next
+      f.setShadows(next.shadows)
+      powderWorld.setDetail(next.particles)
+      if (resolutionChanged) {
+        view.resolution = next.resolution
+        resize()
+      }
+    },
     destroy() {
+      powderWorld.reset()
       ro.disconnect()
       host.removeEventListener('pointermove', pointer)
       host.removeEventListener('pointerleave', leave)
       skin.remove()
       host.style.position = position
+      view.passes = []
+      fxaa?.destroy()
       view.destroy({ children: true })
       f.destroy()
       app.destroy({ removeView: true }, { children: true })

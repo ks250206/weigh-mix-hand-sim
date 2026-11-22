@@ -1,9 +1,11 @@
 import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hud from "./Hud";
+import { loadGraphics, saveGraphics, type GraphicsSettings } from "./graphics";
 import { createGame, startGame, stepGame } from "./game";
 import { createScene } from "./scene";
 import { LabAudio } from "./audio";
+import { foldingFoil } from "./contract";
 import type { GameInput, GameState, Station } from "./contract";
 import "./style.css";
 
@@ -46,12 +48,13 @@ type Control = "door" | "grip" | "action" | "left" | "right";
 type Scene = Awaited<ReturnType<typeof createScene>>;
 
 function App() {
+  const [graphics, setGraphics] = useState(loadGraphics);
+  const graphicsRef = useRef(graphics);
   const [initial] = useState(createGame);
   const game = useRef(initial);
   const [view, setView] = useState(initial);
-  const [audio] = useState(() => new LabAudio());
   const [sound, setSound] = useState(() => read(SOUND) !== "off");
-  audio.enabled = sound;
+  const [audio] = useState(() => new LabAudio(sound));
   const [best, setBest] = useState(() => Math.max(0, Number(read(BEST)) || 0));
   const [ready, setReady] = useState(false);
   const [failure, setFailure] = useState("");
@@ -72,13 +75,14 @@ function App() {
     (value: boolean) => {
       const resuming = paused.current && !value;
       paused.current = value;
+      audio.setPaused(value);
       clearInput();
       if (resuming) {
         // Native dialogs restore their launch button's focus when they close.
         requestAnimationFrame(() => host.current?.focus({ preventScroll: true }));
       }
     },
-    [clearInput],
+    [audio, clearInput],
   );
 
   useEffect(() => {
@@ -89,6 +93,7 @@ function App() {
     let previousTime = 0;
     let debt = 0;
     let publishTime = 0;
+    let lastDraw = 0;
     let lastSpillCue = -Infinity;
     const update = (time: number) => {
       if (disposed) return;
@@ -121,6 +126,7 @@ function App() {
           }
           const tickInput = gripPoint ? { ...i, targetX: gripPoint.x, targetY: gripPoint.y } : i;
           stepGame(s, tickInput, tick);
+          audio.observe(s);
           i.gripPressed = false;
           i.doorPressed = false;
           debt -= tick;
@@ -146,20 +152,26 @@ function App() {
       } else {
         debt = 0;
       }
-      scene.current?.draw(s);
+      const interval = 1000 / graphicsRef.current.fps;
+      if (time - lastDraw >= interval - 0.5) {
+        lastDraw += Math.max(1, Math.floor((time - lastDraw + 0.5) / interval)) * interval;
+        if (Math.abs(lastDraw - time) > interval) lastDraw = time;
+        scene.current?.draw(s);
+      }
       if (time - publishTime >= 80) {
         setView({ ...s });
         publishTime = time;
       }
       frame = requestAnimationFrame(update);
     };
-    void createScene(el)
+    void createScene(el, graphicsRef.current)
       .then((created) => {
         if (disposed) {
           created.destroy();
           return;
         }
         scene.current = created;
+        created.setGraphics(graphicsRef.current);
         setReady(true);
         frame = requestAnimationFrame(update);
       })
@@ -220,9 +232,10 @@ function App() {
   const start = () => {
     if (failure) return;
     audio.unlock();
-    audio.play("start");
     game.current = startGame();
+    audio.reset(game.current);
     pause(false);
+    audio.play("start");
     setView({ ...game.current });
     host.current?.focus({ preventScroll: true });
   };
@@ -262,6 +275,11 @@ function App() {
           host.current?.focus({ preventScroll: true });
           aim(e.clientX, e.clientY);
           if (e.pointerType !== "touch") {
+            const s = game.current;
+            if (
+              !s.hand.held && s.target === foldingFoil(s.stage) &&
+              (keys.current.has("Space") || touch.current.has("action"))
+            ) return;
             pendingGrip.current = { x: input.current.targetX, y: input.current.targetY };
           } else e.currentTarget.setPointerCapture(e.pointerId);
         }}
@@ -289,10 +307,18 @@ function App() {
       scene={surface}
       onStart={start}
       onRestart={start}
+      graphics={graphics}
+      onGraphics={(next: GraphicsSettings) => {
+        graphicsRef.current = next;
+        setGraphics(next);
+        scene.current?.setGraphics(next);
+        saveGraphics(next);
+      }}
       sound={sound}
       onSound={() => {
         const enabled = !sound;
         audio.enabled = enabled;
+        if (!enabled) audio.silence();
         setSound(enabled);
         save(SOUND, enabled ? "on" : "off");
         if (game.current.status === "playing") host.current?.focus({ preventScroll: true });

@@ -1,4 +1,5 @@
 import Matter from 'matter-js'
+import { foilHalfSide, isFoil, isWeighFoil } from './contract.ts'
 import type { GameState, ObjectId, Station } from './contract.ts'
 
 const { Bodies, Body, Composite, Engine, Events } = Matter
@@ -12,6 +13,13 @@ const GLOVE_RADIUS = 22
 const world = (p: Station) => ({ x: p.x * WIDTH, y: p.y * DEPTH })
 const zero = { x: 0, y: 0 }
 
+const h = foilHalfSide * 100
+const flatSheet = { width: 2 * h, depth: 2 * h, angle: 0, mass: 0.16 }
+const sheetOutlines = [
+  [{ x: -h, y: -h }, { x: h, y: -h }, { x: h, y: h }, { x: -h, y: h }],
+  [{ x: -h, y: -h }, { x: h, y: h }, { x: -h, y: h }],
+  [{ x: -h / 3, y: -h }, { x: 2 * h / 3, y: 0 }, { x: -h / 3, y: h }],
+]
 const footprints = {
   jarA: { radius: 36, mass: 1.4 },
   jarB: { radius: 36, mass: 1.4 },
@@ -19,8 +27,10 @@ const footprints = {
   mortar: { radius: 54, mass: 3.6 },
   vial: { radius: 22, mass: 0.42 },
   cap: { radius: 18, mass: 0.12 },
-  foil: { width: 72, depth: 47, angle: 0.13, mass: 0.16 },
-  foil2: { width: 72, depth: 47, angle: -0.19, mass: 0.16 },
+  foil: flatSheet,
+  foilB: flatSheet,
+  foilC: flatSheet,
+  foil2: flatSheet,
   spatula: { width: 98, depth: 13, angle: -0.72, mass: 0.38 },
   pestle: { width: 94, depth: 25, angle: 0.7, mass: 1.3 },
 } as const
@@ -38,6 +48,7 @@ export class TablePhysics {
   private glove: Matter.Body
   private bodies = new Map<LooseId, Matter.Body>()
   private ids = new Map<Matter.Body, LooseId>()
+  private creaseCounts = new Map<LooseId, number>()
   private impacts: Impact[] = []
   private gloveVelocity = { x: 0, y: 0 }
 
@@ -71,7 +82,7 @@ export class TablePhysics {
       this.bodies.set(id, body)
       this.ids.set(body, id)
       Composite.add(this.engine.world, body)
-      if (id === s.hand.held || (id === 'foil' && x === scale.x && y === scale.y)) this.lift(id)
+      if (id === s.hand.held || (isWeighFoil(id) && x === scale.x && y === scale.y)) this.lift(id)
     }
     Events.on(this.engine, 'collisionStart', ({ pairs }) => {
       for (const { collision: { bodyA, bodyB, normal } } of pairs) {
@@ -118,6 +129,22 @@ export class TablePhysics {
     this.confine(body)
   }
 
+  private updateSheet(id: LooseId, body: Matter.Body, count: number) {
+    if ((this.creaseCounts.get(id) ?? 0) === count) return
+    this.creaseCounts.set(id, count)
+    const angle = body.angle
+    Body.setAngle(body, 0)
+    Body.setVertices(body, sheetOutlines[count])
+    Body.setMass(body, flatSheet.mass)
+    // Until the second fold, the hand and the printed crease both refer to the
+    // original square's center. Matter normally centers every new outline.
+    if (count === 1) {
+      Body.translate(body, { x: -h / 3, y: h / 3 })
+      Body.setCentre(body, { x: h / 3, y: -h / 3 }, true)
+    }
+    Body.setAngle(body, angle)
+  }
+
   private confine(body: Matter.Body) {
     // A kinematic glove can pin a body against the rail; keep even a corner release on the table.
     let dx = 0, dy = 0
@@ -147,6 +174,7 @@ export class TablePhysics {
     for (const [id, body] of this.bodies) {
       if (body.isStatic) continue
       const o = s.objects[id]
+      if (isFoil(id)) this.updateSheet(id, body, o.foldCount)
       // Aim over an item to reach above it. Keep the glove raised until it clears that item,
       // so leaving a bottle mouth or a mortar after stirring cannot drag it along.
       if (Math.hypot(aim.x - o.x, aim.y - o.y) < 0.145) {

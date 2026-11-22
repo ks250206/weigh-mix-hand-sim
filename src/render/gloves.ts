@@ -1,13 +1,13 @@
 import { type Container3D } from '@pixi/3d'
 import { Forms, group, type Point3 } from './forms'
 import { sleeve } from './sleeve'
-import { ANCHOR_HEIGHT } from './chamber'
+import type { WristPose } from './toolGrip'
+import { ANCHOR_HEIGHT, glovePort } from './chamber'
 
 export function glove(f: Forms, parent: Container3D, side: -1 | 1) {
-  const cuff = { x: side * 3.76, y: 0.31, z: 3.71 }
+  const cuff = glovePort(side)
   const rubber = f.material(0x1c2028, 0.22),
     fingerRubber = f.material(0xf4e1a2, 0.12)
-  f.oval(parent, rubber, cuff.x, cuff.y - 0.015, cuff.z, 0.482, 0.17, 0.47)
   const updateSleeve = sleeve(f, parent, rubber, cuff)
   const hand = group(parent)
   f.oval(hand, fingerRubber, 0, 0.015, 0.66, 0.259, 0.144, 0.365)
@@ -63,7 +63,13 @@ export function glove(f: Forms, parent: Container3D, side: -1 | 1) {
   const wristBand = f.mesh(hand, f.ring, f.material(0xd0b674, 0.18), 0, 0.025, 1.025, 0.207, 0.135, 0.21)
   wristBand.rotation.x = Math.PI / 2
   const shadow = f.shadow(parent, 0.72, 1.36)
-  return (x: number, z: number, yaw: number, tilt: number, grip: number, t: number, height = ANCHOR_HEIGHT) => {
+  return (x: number, z: number, yaw: number, tilt: number, grip: number, t: number, height = ANCHOR_HEIGHT, toolWrist?: WristPose) => {
+    hand.visible = !toolWrist
+    shadow.visible = !toolWrist
+    if (toolWrist) {
+      updateSleeve(toolWrist.position, yaw, toolWrist.tangent)
+      return
+    }
     const lift = 0.019 * Math.sin(t * 1.9 + side)
     hand.position.set(x, height, z)
     hand.rotation.set(lift, yaw, tilt * 0.32)

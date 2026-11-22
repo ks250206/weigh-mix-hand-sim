@@ -4,6 +4,11 @@ import { createGame, startGame, stepGame } from './game.ts'
 import {
   bottles,
   foilWeight,
+  foldStroke,
+  weighFoils,
+  toolHandle,
+  MIX,
+  type FoilId,
   HOME,
   mass,
   powders,
@@ -65,18 +70,43 @@ function bench() {
   function pour(seconds = 2) {
     frame(seconds, { action: true, tilt: 1 })
   }
-  function setup() {
-    take('foil')
-    setDown(workPositions.foil)
+  function foldSheet(id: FoilId, cornerToCorner = false) {
+    const sheet = s.objects[id]
+    const stage = s.stage
+    to(id)
     act()
-    assert.equal(s.stage, 1)
-    take('foil')
-    to('scale')
+    assert.equal(sheet.foldCount, 0, 'holding action still cannot crease the sheet')
+    for (const count of [0, 1]) {
+      const ends = foldStroke(sheet, cornerToCorner)
+      const [start, finish] = count === 0 ? ends : ends.reverse()
+      to(start)
+      act(0.1)
+      aim = finish
+      act(0.6)
+      assert.equal(sheet.foldCount, count + 1, id + ' crease ' + (count + 1))
+      assert.equal(sheet.folded, count === 1)
+      assert.equal(s.stage, stage + count)
+    }
+  }
+  function prepareFoil(p: Powder) {
+    const id = weighFoils[p]
+    if (s.hand.held) {
+      assert.ok(s.objects[s.hand.held].spent)
+      grip()
+      assert.equal(s.hand.held, null)
+    }
+    const stage = s.stage
+    take(id)
+    setDown(workPositions[id])
+    foldSheet(id)
+    assert.equal(s.stage, stage + 1)
+    take(id)
+    door(false)
     grip()
-    assert.equal(s.hand.held, 'foil', 'closed sash prevents putting foil in')
+    assert.equal(s.hand.held, id, 'closed sash prevents putting foil in')
     door(true)
     setDown('scale')
-    assert.equal(s.stage, 2)
+    assert.equal(s.stage, stage + 2)
     assert.ok(Math.abs(s.scaleMass - foilWeight) < 1e-8)
     act()
     assert.equal(s.tared, false)
@@ -86,6 +116,9 @@ function bench() {
     act()
     assert.equal(s.tared, true)
     assert.equal(s.scaleMass, 0)
+  }
+  function setup() {
+    prepareFoil('a')
     take('mortar')
     setDown(workPositions.mortar)
   }
@@ -102,10 +135,8 @@ function bench() {
     frame(0.18)
   }
   function weigh(p: Powder) {
-    if (s.hand.held === 'foil') {
-      door(true)
-      setDown('scale')
-    }
+    const id = weighFoils[p]
+    if (s.stage % 7 === 0) prepareFoil(p)
     const jar = bottles[p]
     if (!s.objects[jar].open) {
       take(jar)
@@ -117,7 +148,7 @@ function bench() {
     take('spatula')
     for (let i = 0; i < 4 && s.stage === stage; i++) {
       scoop(p)
-      to('foil')
+      to(id)
       pour(1.2)
     }
     assert.equal(s.stage, stage + 1, 'dose ' + p)
@@ -129,14 +160,14 @@ function bench() {
     assert.equal(s.stage, stage + 2, 'record ' + p)
     setDown(HOME.spatula)
     door(true)
-    take('foil')
+    take(id)
     to('mortar')
     pour()
   }
   function load() {
     setup()
     for (const p of powders) weigh(p)
-    assert.equal(s.stage, 15)
+    assert.equal(s.stage, MIX)
     setDown('scale')
   }
   function grind() {
@@ -147,7 +178,7 @@ function bench() {
     act(1)
     assert.ok(s.mixed - before < 0.001)
     const m = s.objects.mortar
-    for (let i = 0; i < 420 && s.stage === 15; i++) {
+    for (let i = 0; i < 420 && s.stage === MIX; i++) {
       aim = { x: m.x + 0.062 * Math.cos(i / 9), y: m.y + 0.048 * Math.sin(i / 9) }
       act(0.025)
     }
@@ -158,7 +189,7 @@ function bench() {
     if (!s.objects.foil2.folded) {
       take('foil2')
       setDown(workPositions.foil2)
-      act()
+      foldSheet('foil2')
     }
     take('mortar')
     to('foil2')
@@ -192,6 +223,7 @@ function bench() {
     pour,
     scoop,
     setup,
+    foldSheet,
     weigh,
     load,
     grind,
@@ -232,14 +264,14 @@ test('spilling mixed powder requires three top-ups and fresh grinding; filled ma
   b.fill()
   const saved = b.s.vialMass
   assert.ok(saved > 0 && saved < 1.9)
-  assert.equal(b.s.stage, 4)
+  assert.equal(b.s.stage, 0)
   b.seal()
   assert.equal(b.s.status, 'playing')
   b.setDown(HOME.cap)
-  // After a loss the empty weighing boat stays where it was put.
+  // Each supplemental weighing requires a new flat sheet and a fresh tare.
   for (const p of powders) b.weigh(p)
   assert.equal(b.s.vialMass, saved)
-  assert.equal(b.s.stage, 15)
+  assert.equal(b.s.stage, MIX)
   b.setDown('scale')
   b.grind()
   b.collect()
@@ -255,7 +287,7 @@ test('tools stay where released; foil folding and bottle opening require a front
   assert.equal(b.s.objects.foil.folded, false)
   b.take('foil')
   b.setDown({ x: 0.44, y: 0.86 })
-  b.act()
+  b.foldSheet('foil')
   assert.equal(b.s.stage, 1)
   assert.ok(Math.abs(b.s.objects.foil.x - 0.44) < 0.01)
   b.take('foil')
@@ -348,7 +380,7 @@ test('a collision spills a loaded mortar, then the player can recover, reweigh a
   b.take('mortar')
   b.setDown(workPositions.mortar)
   b.grind()
-  assert.equal(b.s.stage, 4)
+  assert.equal(b.s.stage, 0)
   for (const p of powders) b.weigh(p)
   b.setDown('scale')
   b.grind()
@@ -359,4 +391,79 @@ test('a collision spills a loaded mortar, then the player can recover, reweigh a
   assert.ok(b.s.recovery < 100)
   assert.ok(b.s.score > 0)
   for (const p of powders) assert.ok(Math.abs(b.s.objects.vial[p] - recipe[p]) < 0.00001)
+})
+
+test('a stream straddling the mortar rim divides the same dose between mortar and bench', () => {
+  const s = startGame()
+  const offset = (0.61 + 0.18) / 12
+  s.stage = 6
+  Object.assign(s.objects.mortar, workPositions.mortar)
+  Object.assign(s.hand, { x: s.objects.mortar.x + offset, y: s.objects.mortar.y, held: 'foil', tilt: 1 })
+  Object.assign(s.objects.foil, { x: s.hand.x, y: s.hand.y, a: 0.2, foldCount: 2, folded: true })
+  s.objects.jarA.a -= 0.2
+  stepGame(s, { targetX: s.hand.x, targetY: s.hand.y, action: true, gripPressed: false, tilt: 1 }, 0.09)
+  assert.ok(s.objects.mortar.a > 0 && s.spilledMass.a > 0)
+  assert.ok(Math.abs(s.objects.mortar.a + s.spilledMass.a + s.objects.foil.a - 0.2) < 1e-8)
+  assert.ok(s.anger > 0)
+  assert.ok(s.powderTransfers.some(event => event.from === 'foil' && event.to === 'mortar'))
+  assert.ok(s.powderTransfers.some(event => event.from === 'foil' && event.to === null))
+})
+
+test('one foil cannot stand in for another material or be tared on top of another sheet', () => {
+  const b = bench()
+  b.setup()
+  b.weigh('a')
+  assert.equal(b.s.stage, 7)
+  assert.equal(b.s.tared, false)
+  assert.equal(b.s.objects.foil.spent, true)
+  b.grip()
+  assert.equal(b.s.objects.foil.foldCount, 0)
+  b.take('foil')
+  b.setDown(workPositions.foil)
+  b.to('foil')
+  b.act()
+  assert.equal(b.s.stage, 7)
+  assert.equal(b.s.target, 'foilB')
+  b.take('foil')
+  b.door(true)
+  b.setDown('scale')
+  b.take('foilB')
+  b.setDown(workPositions.foilB)
+  b.foldSheet('foilB')
+  b.take('foilB')
+  b.to('scale')
+  b.grip()
+  assert.equal(b.s.hand.held, 'foilB', 'occupied pan refuses a second sheet')
+  assert.equal(b.s.tared, false)
+})
+
+test('a player can fold by carrying the free corner across the sheet for each successive fold', () => {
+  const b = bench()
+  b.take('foil')
+  b.setDown(workPositions.foil)
+  b.foldSheet('foil', true)
+  assert.equal(b.s.objects.foil.foldCount, 2)
+  assert.equal(b.s.stage, 1)
+})
+
+test('the glove grips each rotated handle among nearby objects and then aims with the working tip', () => {
+  for (const id of ['spatula', 'pestle'] as const) {
+    const s = startGame()
+    const start = { x: 0.44, y: 0.66, yaw: 1.1 }
+    Object.assign(s.objects[id], start)
+    const grip = toolHandle(id, s.objects[id])
+    // A neighboring cap is closer to the glove than the middle of the long tool.
+    Object.assign(s.objects.cap, { x: grip.x + 0.012, y: grip.y })
+    Object.assign(s.hand, grip)
+    const input = { targetX: grip.x, targetY: grip.y, gripPressed: true, tilt: 0, action: false }
+    stepGame(s, input, 1 / 120)
+    assert.equal(s.hand.held, id)
+    assert.deepEqual(s.hand.toolPickup, { ...start, progress: 0 })
+    stepGame(s, { ...input, gripPressed: false, targetX: 0.59 }, 0.10)
+    assert.ok(s.hand.toolPickup && s.hand.toolPickup.progress > 0.4 && s.hand.toolPickup.progress < 0.6)
+    stepGame(s, { ...input, gripPressed: false, targetX: 0.59 }, 0.5)
+    assert.equal(s.hand.toolPickup, undefined)
+    assert.equal(s.objects[id].x, s.hand.x, 'working end follows the player aim')
+    assert.equal(s.objects[id].y, s.hand.y)
+  }
 })
