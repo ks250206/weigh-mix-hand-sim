@@ -69,8 +69,13 @@ function App() {
   }, []);
   const pause = useCallback(
     (value: boolean) => {
+      const resuming = paused.current && !value;
       paused.current = value;
       clearInput();
+      if (resuming) {
+        // Native dialogs restore their launch button's focus when they close.
+        requestAnimationFrame(() => host.current?.focus({ preventScroll: true }));
+      }
     },
     [clearInput],
   );
@@ -283,6 +288,7 @@ function App() {
         audio.enabled = enabled;
         setSound(enabled);
         save(SOUND, enabled ? "on" : "off");
+        if (game.current.status === "playing") host.current?.focus({ preventScroll: true });
         if (enabled) {
           audio.unlock();
           audio.play("grip");
