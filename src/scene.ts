@@ -5,21 +5,22 @@ import { HOME, LABELS, type GameState, type ObjectId, type Station } from './con
 import { ANCHOR_HEIGHT, chamber, TABLE_DEPTH, TABLE_WIDTH, worldX, worldZ } from './render/chamber'
 import { Forms } from './render/forms'
 import { glove } from './render/gloves'
-import { instrument } from './render/instruments'
+import { instrument, powderColors } from './render/instruments'
 
 const ids = Object.keys(HOME) as ObjectId[]
 const limit = (v: number) => Math.max(0, Math.min(1, v))
 const styles = `
-.gb-window {position:absolute;inset:0;overflow:hidden;pointer-events:none;box-shadow:inset 0 0 0 3px #344e4d,inset 0 0 0 5px #95aaa05e,inset 0 7px 16px #17303355,inset 0 -4px 10px #1c383650;z-index:1}
-.gb-window::after {content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(119deg,transparent 2%,#defff70c 2.15%,#defff708 5%,transparent 5.2%,transparent 88%,#e7fff50a 88.15%,transparent 91%);}
+.gb-window {position:absolute;inset:0;overflow:hidden;pointer-events:none;box-shadow:inset 0 0 0 3px #223b67,inset 0 0 0 5px #b7d0fd70,inset 0 7px 16px #1a325b45,inset 0 -4px 10px #182c4a50;z-index:1}
+.gb-window::after {content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(119deg,transparent 2%,#effaff12 2.15%,#eef8ff09 5%,transparent 5.2%,transparent 88%,#e5f5ff10 88.15%,transparent 91%);}
 .gb-station {position:absolute;left:0;top:0;width:8px;height:8px;margin:-4px;pointer-events:none;z-index:1}
-.gb-station > span {position:absolute;left:50%;top:50%;transform:translate(calc(-50% + var(--shift, 0px)),var(--offset));white-space:nowrap;color:#253d36;background:#d7e2d5de;border:1px solid #869e90;border-radius:3px;padding:2px 5px;font:700 var(--label-size, 11px)/1.2 "Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;letter-spacing:.025em;box-shadow:0 1px 2px #1e38352b;pointer-events:auto;cursor:crosshair;}
+.gb-station > span {position:absolute;left:50%;top:50%;transform:translate(calc(-50% + var(--shift, 0px)),var(--offset));white-space:nowrap;color:#172d4e;background:#f9fbfff2;border:1px solid #788ca8;border-radius:3px;padding:2px 5px;font:700 var(--label-size, 11px)/1.2 "Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;letter-spacing:.025em;box-shadow:0 1px 2px #1a365637;pointer-events:auto;cursor:crosshair;}
 .gb-station[data-focus] {z-index:3}
-.gb-station[data-focus] > span {color:#f4fae4;background:#2b4940;border-color:#d1e7b3}
+.gb-station[data-focus] > span {color:#ffffff;background:#263f70;border-color:#e9f4ff}
+.gb-station[data-held] > span {pointer-events:none}
 .gb-station[data-goal] {z-index:4}
-.gb-station[data-goal] > span {color:#28301c;background:#e4f45e;border-color:#5a6a36}
-.gb-cursor {position:absolute;top:0;left:0;width:15px;height:15px;margin:-7.5px;border:1.5px solid #f6ffe5;border-radius:50%;box-shadow:0 0 0 1px #27433cc4;pointer-events:none;z-index:2}
-.gb-cursor::after {content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;background:#26463c;border:1px solid #f7ffe8;box-sizing:content-box;border-radius:50%;transform:translate(-50%,-50%)}
+.gb-station[data-goal] > span {color:#ffffff;background:#1747cf;border-color:#ecf6ff}
+.gb-cursor {position:absolute;top:0;left:0;width:15px;height:15px;margin:-7.5px;border:1.5px solid #ffffff;border-radius:50%;box-shadow:0 0 0 1px #233957e6;pointer-events:none;z-index:2}
+.gb-cursor::after {content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;background:#173eab;border:1px solid #ffffff;box-sizing:content-box;border-radius:50%;transform:translate(-50%,-50%)}
 `
 export async function createScene(host: HTMLElement): Promise<{
   draw(state: GameState): void
@@ -34,7 +35,7 @@ export async function createScene(host: HTMLElement): Promise<{
     autoStart: false,
     autoDensity: true,
     resolution: Math.min(2, window.devicePixelRatio || 1),
-    background: 0x415e60,
+    background: 0xabbcd0,
     antialias: true,
     powerPreference: 'high-performance',
   })
@@ -51,12 +52,12 @@ export async function createScene(host: HTMLElement): Promise<{
   app.stage.addChild(view)
   const f = new Forms(),
     root = view.root
-  root.addChild(new AmbientLight({ color: 0xe0eee7, intensity: 0.93 }))
-  const key = new DirectionalLight({ color: 0xfff0d1, intensity: 1.72 })
+  root.addChild(new AmbientLight({ color: 0xf2f6ff, intensity: 0.93 }))
+  const key = new DirectionalLight({ color: 0xfff9f0, intensity: 1.72 })
   root.addChild(key)
   key.position.set(-6, 10, 5)
   key.lookAt({ x: 0, y: 0, z: 0 })
-  const fill = new DirectionalLight({ color: 0xc8e8f7, intensity: 0.7 })
+  const fill = new DirectionalLight({ color: 0xd5e7ff, intensity: 0.7 })
   root.addChild(fill)
   fill.position.set(7, 5, -3)
   fill.lookAt({ x: 0, y: 0, z: 0 })
@@ -87,12 +88,15 @@ export async function createScene(host: HTMLElement): Promise<{
     skin.appendChild(marker)
     return { id, model, marker, caption, shadow, ax: 0, ay: 0, offset: 0, tagWidth: 0, tagHeight: 0 }
   })
-  const goal = f.mesh(root, f.ring, f.ink(0xd8e845), 0, 0.034, 0, 1)
+  const goal = f.mesh(root, f.ring, f.ink(0x174edb), 0, 0.034, 0, 1)
   const particles: Mesh3D[] = []
   const residue: Mesh3D[] = []
   let spilled = 0,
     residueCount = 0
   const plane = new Plane(new Vector3(0, 1, 0), -ANCHOR_HEIGHT)
+  const powderSurface = new Plane(new Vector3(0, 1, 0), -1.11)
+  const jarLid = new Plane(new Vector3(0, 1, 0), -1.415)
+  const shieldRoof = new Plane(new Vector3(0, 1, 0), -1.58)
   const point = new Vector3()
   let width = 1,
     height = 1,
@@ -136,14 +140,29 @@ export async function createScene(host: HTMLElement): Promise<{
       return { x, y }
     }
     const rect = app.canvas.getBoundingClientRect()
-    const hit = view.screenToWorld(
-      {
-        x: ((clientX - rect.left) * width) / (rect.width || 1),
-        y: ((clientY - rect.top) * height) / (rect.height || 1),
-      },
-      plane,
-      point,
-    )
+    const pixel = {
+      x: ((clientX - rect.left) * width) / (rect.width || 1),
+      y: ((clientY - rect.top) * height) / (rect.height || 1),
+    }
+    // Raised lids and the draft shield project well behind their tabletop anchors.
+    if (last) {
+      for (const id of ['jarA', 'jarB', 'jarC'] as const) {
+        const jar = last.objects[id]
+        if (last.hand.held === id || jar.toppled) continue
+        const surface = view.screenToWorld(pixel, jar.open ? powderSurface : jarLid, point)
+        if (surface && Math.hypot(surface.x - worldX(jar.x), surface.z - worldZ(jar.y)) < 0.46) {
+          if (jar.open && last.hand.held === 'spatula')
+            return { x: surface.x / TABLE_WIDTH + 0.5, y: surface.z / TABLE_DEPTH + 0.5 }
+          return { x: jar.x, y: jar.y }
+        }
+      }
+      const scale = last.objects.scale
+      const roof = view.screenToWorld(pixel, shieldRoof, point)
+      if (roof && Math.abs(roof.x - worldX(scale.x)) <= 0.75 &&
+        Math.abs(roof.z - worldZ(scale.y) + 0.12) <= 0.58)
+        return { x: scale.x, y: scale.y }
+    }
+    const hit = view.screenToWorld(pixel, plane, point)
     return hit
       ? { x: limit(hit.x / TABLE_WIDTH + 0.5), y: limit(hit.z / TABLE_DEPTH + 0.5) }
       : { x: 0.5, y: 0.5 }
@@ -172,7 +191,12 @@ export async function createScene(host: HTMLElement): Promise<{
     for (const entry of models) {
       if (entry.marker.hidden) continue
       const { ax, ay, offset, tagWidth: w, tagHeight: h } = entry
+      // On a phone the two foil sheets and the vial/cap sit almost one caption apart.
+      const sideLabel = width < 500 && ['foil', 'foil2', 'vial', 'cap'].includes(entry.id)
+      const preferredX = sideLabel ? (ax < width / 2 ? 1 : -1) * (w / 2 + width * entry.model.radius / 12) : 0
+      const preferredY = sideLabel ? 1 : offset
       const candidates = [
+        [preferredX, preferredY],
         [0, offset],
         [0, offset + h + 3],
         [0, -h - 13],
@@ -190,15 +214,15 @@ export async function createScene(host: HTMLElement): Promise<{
           right = left + w,
           top = ay + dy,
           bottom = top + h
-        let score = Math.abs(dx) * 0.12 + Math.abs(dy - offset) * 0.2
+        let score = Math.abs(dx - preferredX) * 0.12 + Math.abs(dy - preferredY) * 0.2
         if (top < 3 || bottom > height - 3) score += 1000
         for (const other of models) {
           if (
             !other.marker.hidden &&
-            other.ax >= left - 6 &&
-            other.ax <= right + 6 &&
-            other.ay >= top - 6 &&
-            other.ay <= bottom + 6
+            other.ax >= left - 4 &&
+            other.ax <= right + 4 &&
+            other.ay >= top - 3 &&
+            other.ay <= bottom + 3
           )
             score += 500
         }
@@ -229,12 +253,27 @@ export async function createScene(host: HTMLElement): Promise<{
       })
     }
   }
+  const support = { x: -3.1, z: 2.35, height: ANCHOR_HEIGHT }
+  let previousDraw = 0
   function draw(s: GameState) {
     last = s
     const t = performance.now() / 1000
     const goalId = s.status === 'playing' ? s.target : null
     const held = s.hand.held
     const project = (x: number, y: number, z: number) => view.worldToScreen({ x, y, z })
+    const hx = worldX(s.hand.x),
+      hz = worldZ(s.hand.y)
+    const yaw = Math.atan2(3.76 - hx, Math.max(0.5, 3.76 - hz)) * 0.76
+    let utensilHeight = 0.64
+    if (held === 'spatula') {
+      for (const id of ['jarA', 'jarB', 'jarC'] as const) {
+        const jar = s.objects[id]
+        const reach = limit(1 - (Math.hypot(s.hand.x - jar.x, s.hand.y - jar.y) - 0.045) / 0.12)
+        utensilHeight = Math.max(utensilHeight, 0.64 + reach * (0.78 - 0.31 * s.scoopDepth))
+      }
+      const reach = limit(1 - Math.hypot(s.hand.x - s.objects.scale.x, s.hand.y - s.objects.scale.y) / 0.14)
+      utensilHeight = Math.max(utensilHeight, 0.64 + 0.32 * reach)
+    }
     for (const entry of models) {
       const { id, model, marker, shadow } = entry
       const o = s.objects[id],
@@ -246,25 +285,30 @@ export async function createScene(host: HTMLElement): Promise<{
         id === 'cap' &&
         !s.objects.vial.open &&
         Math.hypot(o.x - s.objects.vial.x, o.y - s.objects.vial.y) < 0.03
-      const y = id === held ? 0.5 : dockedFoil ? 0.515 : 0
+      const y = id === 'spatula' && id === held ? utensilHeight : id === held ? 0.5 : dockedFoil ? 0.515 : 0
       model.root.visible = !sealedCap
       model.root.position.set(x, y + (o.toppled ? model.radius * 0.75 : 0), z)
       model.root.rotation.z = o.toppled ? -Math.sign(o.tilt || 1) * 1.36 : -o.tilt
-      model.update?.(o, s.scaleMass, s.mixed)
+      model.root.rotation.y = id === held && id === 'spatula' ? yaw : (o.yaw ?? 0)
+      model.update?.(o, s.scaleMass, s.mixed, id === held, s.scoopDepth)
       shadow.position.set(x + 0.09, 0.013, z + 0.065)
-      shadow.visible = !dockedFoil && !sealedCap
+      shadow.visible = !dockedFoil && !sealedCap && id !== 'work'
       const anchor = project(x, ANCHOR_HEIGHT, z)
-      const tag = project(x, 0.022, z + model.radius * 0.7 + 0.15)
+      const tag = project(x, 0.022, z + model.radius * (width < 500 ? 0.48 : 0.7) + 0.08)
       if (anchor && tag) {
         const transform = 'translate(' + anchor.x.toFixed(2) + 'px,' + anchor.y.toFixed(2) + 'px)'
         if (marker.style.transform !== transform) marker.style.transform = transform
         entry.ax = anchor.x
         entry.ay = anchor.y
-        entry.offset = tag.y - anchor.y + 2
+        const rearInstrument = id === 'scale' || id === 'jarA' || id === 'jarB' || id === 'jarC'
+        const top = width < 500 && rearInstrument ? project(x, y + model.height, z - 0.25) : null
+        entry.offset = top ? top.y - anchor.y - entry.tagHeight - 2 : tag.y - anchor.y + 2
       }
       marker.hidden =
         sealedCap ||
+        (id === 'work' && goalId !== 'work') ||
         (id === 'scale' && s.objects.foil.x === o.x && s.objects.foil.y === o.y && goalId !== 'scale')
+      marker.toggleAttribute('data-held', id === held)
       marker.toggleAttribute('data-goal', id === goalId)
       marker.toggleAttribute('data-focus', id === hovering || id === held)
       if (id === goalId) {
@@ -276,18 +320,36 @@ export async function createScene(host: HTMLElement): Promise<{
     layoutCaptions()
     goal.visible = goalId !== null
     const title = s.status === 'title'
-    const hx = worldX(s.hand.x),
-      hz = worldZ(s.hand.y)
     const idle = title ? 0.1 : 0
-    right(hx, hz, Math.atan2(3.76 - hx, Math.max(0.5, 3.76 - hz)) * 0.76, s.hand.tilt, held ? 0.78 : 0, t)
-    left(
-      -3.1 + Math.sin(t * 0.91) * 0.06,
-      2.35 + Math.sin(t * 1.13) * (0.035 + idle),
-      -0.44,
-      0.11,
-      0.15,
-      t + 0.83,
+    right(
+      hx,
+      hz,
+      yaw,
+      s.hand.tilt,
+      held ? 0.78 : 0,
+      t,
+      held === 'spatula' ? utensilHeight + 0.14 + s.scoopDepth * 0.25 : ANCHOR_HEIGHT,
     )
+    // The free glove braces the vessel while the tool hand scoops or grinds.
+    const receiving =
+      held === 'pestle' ? (['mortar'] as const) : held === 'spatula' ? (['jarA', 'jarB', 'jarC'] as const) : []
+    let brace: Station | undefined
+    for (const id of receiving) {
+      const vessel = s.objects[id]
+      if (
+        !vessel.toppled &&
+        (id === 'mortar' || vessel.open) &&
+        Math.hypot(s.hand.x - vessel.x, s.hand.y - vessel.y) < 0.1
+      )
+        brace = vessel
+    }
+    const blend = 1 - Math.exp(-Math.min(0.1, t - previousDraw) * 7)
+    previousDraw = t
+    support.x += ((brace ? worldX(brace.x) - 0.48 : -3.1 + Math.sin(t * 0.91) * 0.06) - support.x) * blend
+    support.z +=
+      ((brace ? worldZ(brace.y) + 0.1 : 2.35 + Math.sin(t * 1.13) * (0.035 + idle)) - support.z) * blend
+    support.height += ((brace ? (held === 'pestle' ? 0.44 : 0.61) : ANCHOR_HEIGHT) - support.height) * blend
+    left(support.x, support.z, -0.64, 0.11, brace ? 0.55 : 0.15, t + 0.83, support.height)
     const target = project(hx, ANCHOR_HEIGHT, hz)
     cursor.hidden = s.status !== 'playing'
     if (target)
@@ -300,7 +362,7 @@ export async function createScene(host: HTMLElement): Promise<{
       residueCount = 0
     } else if (s.spilled > spilled) {
       const source = s.particles.at(-1) ?? s.hand
-      const color = s.particles.at(-1)?.kind === 'b' ? 0x87b7ba : 0xc0a35c
+      const color = powderColors[s.particles.at(-1)?.kind ?? 'a']
       const count = Math.max(1, Math.min(7, Math.ceil((s.spilled - spilled) * 28)))
       for (let i = 0; i < count; i++) {
         const index = residueCount % 128
@@ -327,7 +389,7 @@ export async function createScene(host: HTMLElement): Promise<{
       }
       const mesh = particles[i] ?? (particles[i] = f.mesh(root, f.ball, 0xe3d099))
       mesh.visible = true
-      mesh.material = f.material(grain.kind === 'a' ? 0xffda80 : 0x92c6d2)
+      mesh.material = f.material(powderColors[grain.kind])
       const age = limit(1 - grain.life / 0.6)
       mesh.position.set(
         worldX(grain.x),

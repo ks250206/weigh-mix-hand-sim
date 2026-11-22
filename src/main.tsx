@@ -4,7 +4,7 @@ import Hud from "./Hud";
 import { createGame, startGame, stepGame } from "./game";
 import { createScene } from "./scene";
 import { LabAudio } from "./audio";
-import type { GameInput, GameState } from "./contract";
+import type { GameInput, GameState, Station } from "./contract";
 import "./style.css";
 
 const BEST = "glovebox-panic.best.v1";
@@ -40,8 +40,9 @@ const playKeys = new Set([
   "KeyQ",
   "KeyE",
   "KeyF",
+  "KeyR",
 ]);
-type Control = "grip" | "action" | "left" | "right";
+type Control = "door" | "grip" | "action" | "left" | "right";
 type Scene = Awaited<ReturnType<typeof createScene>>;
 
 function App() {
@@ -60,12 +61,12 @@ function App() {
   const keys = useRef(new Set<string>());
   const touch = useRef(new Set<Control>());
   const paused = useRef(false);
-  const pendingGrip = useRef(false);
+  const pendingGrip = useRef<Station | null>(null);
   const clearInput = useCallback(() => {
     input.current = neutral(game.current);
     keys.current.clear();
     touch.current.clear();
-    pendingGrip.current = false;
+    pendingGrip.current = null;
   }, []);
   const pause = useCallback(
     (value: boolean) => {
@@ -112,16 +113,16 @@ function App() {
           i.targetY = clamp(i.targetY + dy * speed * tick);
           i.action = k.has("Space") || t.has("action");
           i.tilt = axis(k.has("KeyQ") || t.has("left"), k.has("KeyE") || t.has("right"));
-          // A click also aims the hand. Latch the grip until the glove reaches that point.
-          if (
-            pendingGrip.current &&
-            Math.hypot(s.hand.x - i.targetX, s.hand.y - i.targetY) < 0.065
-          ) {
+          // Finish a click at its original location even if the mouse has already moved on.
+          const gripPoint = pendingGrip.current;
+          if (gripPoint && Math.hypot(s.hand.x - gripPoint.x, s.hand.y - gripPoint.y) < 0.032) {
             i.gripPressed = true;
-            pendingGrip.current = false;
+            pendingGrip.current = null;
           }
-          stepGame(s, i, tick);
+          const tickInput = gripPoint ? { ...i, targetX: gripPoint.x, targetY: gripPoint.y } : i;
+          stepGame(s, tickInput, tick);
           i.gripPressed = false;
+          i.doorPressed = false;
           debt -= tick;
         }
         const outcome: GameState["status"] = game.current.status;
@@ -186,7 +187,11 @@ function App() {
       host.current?.focus({ preventScroll: true });
       e.preventDefault();
       keys.current.add(e.code);
-      if (e.code === "KeyF" && !e.repeat) input.current.gripPressed = true;
+      if (e.code === "KeyR" && !e.repeat) input.current.doorPressed = true;
+      if (e.code === "KeyF" && !e.repeat) {
+        pendingGrip.current = null;
+        input.current.gripPressed = true;
+      }
     };
     const keydown = (e: KeyboardEvent) => handleKey(e, true);
     const keyup = (e: KeyboardEvent) => handleKey(e, false);
@@ -226,6 +231,7 @@ function App() {
     if (down) {
       audio.unlock();
       if (c === "grip") input.current.gripPressed = true;
+      else if (c === "door") input.current.doorPressed = true;
       else touch.current.add(c);
     } else touch.current.delete(c);
     host.current?.focus({ preventScroll: true });
@@ -255,8 +261,9 @@ function App() {
           if (e.button !== 0 || paused.current || game.current.status !== "playing") return;
           host.current?.focus({ preventScroll: true });
           aim(e.clientX, e.clientY);
-          if (e.pointerType !== "touch") pendingGrip.current = true;
-          else e.currentTarget.setPointerCapture(e.pointerId);
+          if (e.pointerType !== "touch") {
+            pendingGrip.current = { x: input.current.targetX, y: input.current.targetY };
+          } else e.currentTarget.setPointerCapture(e.pointerId);
         }}
       />
       {!ready && (
@@ -266,8 +273,8 @@ function App() {
             position: "absolute",
             inset: "40% 5% auto",
             textAlign: "center",
-            color: "#e6efb5",
-            background: "#192e30",
+            color: "#ffffff",
+            background: "#1c3177",
             padding: 12,
           }}
         >

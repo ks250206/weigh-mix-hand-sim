@@ -71,7 +71,7 @@ export class Forms {
       mat = new PhongMaterial({
         baseColor: color,
         specularStrength: sheen,
-        specularColor: 0xc2d6d1,
+        specularColor: 0xe0eafb,
         shininess: 39,
         doubleSided: true,
       })
@@ -158,10 +158,10 @@ export class Forms {
   shadow(parent: Container3D, width: number, depth: number) {
     this.contactShadow ??= this.decal(128, 128, (ctx) => {
       const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 63)
-      gradient.addColorStop(0, 'rgba(32,57,50,.43)')
-      gradient.addColorStop(0.46, 'rgba(41,65,52,.29)')
-      gradient.addColorStop(0.76, 'rgba(49,70,60,.12)')
-      gradient.addColorStop(1, 'rgba(55,81,66,0)')
+      gradient.addColorStop(0, 'rgba(21,34,56,.53)')
+      gradient.addColorStop(0.46, 'rgba(40,51,76,.32)')
+      gradient.addColorStop(0.76, 'rgba(50,64,88,.13)')
+      gradient.addColorStop(1, 'rgba(60,73,94,0)')
       ctx.fillStyle = gradient
       ctx.fillRect(0, 0, 128, 128)
     })

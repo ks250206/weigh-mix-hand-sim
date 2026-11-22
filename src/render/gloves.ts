@@ -5,12 +5,12 @@ import { ANCHOR_HEIGHT } from './chamber'
 
 export function glove(f: Forms, parent: Container3D, side: -1 | 1) {
   const cuff = { x: side * 3.76, y: 0.31, z: 3.71 }
-  const rubber = f.material(0xc68b47, 0.19),
-    fingerRubber = f.material(0xd69a52, 0.21)
+  const rubber = f.material(0x1c2028, 0.22),
+    fingerRubber = f.material(0xf4e1a2, 0.12)
   f.oval(parent, rubber, cuff.x, cuff.y - 0.015, cuff.z, 0.482, 0.17, 0.47)
   const updateSleeve = sleeve(f, parent, rubber, cuff)
   const hand = group(parent)
-  f.oval(hand, rubber, 0, 0.015, 0.66, 0.259, 0.144, 0.365)
+  f.oval(hand, fingerRubber, 0, 0.015, 0.66, 0.259, 0.144, 0.365)
   f.oval(hand, fingerRubber, -side * 0.085, 0.005, 0.51, 0.17, 0.132, 0.21)
   const finger = f.profile(
     [
@@ -44,13 +44,28 @@ export function glove(f: Forms, parent: Container3D, side: -1 | 1) {
   thumb.position.set(-side * 0.16, -0.02, 0.68)
   thumb.rotation.y = side * 0.81
   const thumbMesh = f.mesh(thumb, finger, fingerRubber, 0, 0, 0, 0.093, 0.385, 0.086)
-  // A darker wrist bead distinguishes the palm from the concertina sleeve.
-  const wristBand = f.mesh(hand, f.ring, f.material(0xae753d, 0.16), 0, 0.025, 0.905, 0.207, 0.135, 0.21)
+  // The rolled overglove cuff overlaps the black gauntlet at the wrist.
+  const cuffLip = f.mesh(
+    hand,
+    f.profile([
+      [0.208, 0],
+      [0.22, 0.04],
+      [0.211, 0.16],
+      [0.224, 0.24],
+      [0.22, 0.27],
+    ]),
+    fingerRubber,
+    0,
+    0.022,
+    0.76,
+  )
+  cuffLip.rotation.x = Math.PI / 2
+  const wristBand = f.mesh(hand, f.ring, f.material(0xd0b674, 0.18), 0, 0.025, 1.025, 0.207, 0.135, 0.21)
   wristBand.rotation.x = Math.PI / 2
   const shadow = f.shadow(parent, 0.72, 1.36)
-  return (x: number, z: number, yaw: number, tilt: number, grip: number, t: number) => {
+  return (x: number, z: number, yaw: number, tilt: number, grip: number, t: number, height = ANCHOR_HEIGHT) => {
     const lift = 0.019 * Math.sin(t * 1.9 + side)
-    hand.position.set(x, ANCHOR_HEIGHT, z)
+    hand.position.set(x, height, z)
     hand.rotation.set(lift, yaw, tilt * 0.32)
     digits.forEach(({ shape }, i) => {
       shape.rotation.x = -1.55 - grip * 0.65 + 0.032 * Math.sin(t * 2.0 + i * 0.7)
@@ -58,7 +73,7 @@ export function glove(f: Forms, parent: Container3D, side: -1 | 1) {
     thumbMesh.rotation.x = -1.51 - grip * 0.58
     const wrist: Point3 = {
       x: x + Math.sin(yaw) * 0.91,
-      y: ANCHOR_HEIGHT + 0.025 + lift,
+      y: height + 0.025 + lift,
       z: z + Math.cos(yaw) * 0.91,
     }
     updateSleeve(wrist, yaw)
