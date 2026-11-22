@@ -11,6 +11,7 @@ import "./style.css";
 
 const BEST = "glovebox-panic.best.v1";
 const SOUND = "glovebox-panic.sound.v1";
+const LOUPE = "glovebox-panic.loupe.v1";
 function read(key: string) {
   try {
     return localStorage.getItem(key);
@@ -43,6 +44,7 @@ const playKeys = new Set([
   "KeyE",
   "KeyF",
   "KeyR",
+  "KeyZ",
 ]);
 type Control = "door" | "grip" | "action" | "left" | "right";
 type Scene = Awaited<ReturnType<typeof createScene>>;
@@ -60,6 +62,16 @@ function App() {
   const [failure, setFailure] = useState("");
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<Scene | null>(null);
+  const [loupe, setLoupe] = useState(() => read(LOUPE) === "on");
+  const loupeRef = useRef(loupe);
+  const toggleLoupe = useCallback(() => {
+    const enabled = !loupeRef.current;
+    loupeRef.current = enabled;
+    setLoupe(enabled);
+    scene.current?.setLoupe(enabled);
+    save(LOUPE, enabled ? "on" : "off");
+    if (game.current.status === "playing") host.current?.focus({ preventScroll: true });
+  }, []);
   const input = useRef(neutral(initial));
   const keys = useRef(new Set<string>());
   const touch = useRef(new Set<Control>());
@@ -172,6 +184,7 @@ function App() {
         }
         scene.current = created;
         created.setGraphics(graphicsRef.current);
+        created.setLoupe(loupeRef.current);
         setReady(true);
         frame = requestAnimationFrame(update);
       })
@@ -198,6 +211,10 @@ function App() {
       if (e.target instanceof HTMLButtonElement && e.code === "Space") return;
       host.current?.focus({ preventScroll: true });
       e.preventDefault();
+      if (e.code === "KeyZ") {
+        if (!e.repeat) toggleLoupe();
+        return;
+      }
       keys.current.add(e.code);
       if (e.code === "KeyR" && !e.repeat) input.current.doorPressed = true;
       if (e.code === "KeyF" && !e.repeat) {
@@ -227,7 +244,7 @@ function App() {
       document.removeEventListener("visibilitychange", reset);
       audio.close();
     };
-  }, [audio, clearInput]);
+  }, [audio, clearInput, toggleLoupe]);
 
   const start = () => {
     if (failure) return;
@@ -307,6 +324,8 @@ function App() {
       scene={surface}
       onStart={start}
       onRestart={start}
+      loupe={loupe}
+      onLoupe={toggleLoupe}
       graphics={graphics}
       onGraphics={(next: GraphicsSettings) => {
         graphicsRef.current = next;

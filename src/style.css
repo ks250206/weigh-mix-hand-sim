@@ -78,6 +78,9 @@ button:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
 .bench, .metrics, .mission, .timer, .professor { min-width: 0; }
 .bench { grid-area: bench; border: 1px solid var(--sub-blue); }
 .bench-head { justify-content: space-between; padding: 8px 15px; min-height: 38px; color: var(--blue); }
+.loupe-toggle { display: inline-flex; align-items: center; gap: 5px; margin: -4px 12px -4px auto; min-height: 32px; padding: 3px 8px; border: 1px solid var(--sub-blue); border-radius: 3px; font-size: 12px; font-weight: 700; }
+.loupe-toggle:hover { background: var(--pale); }
+.loupe-toggle[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: white; }
 .bench-head h2, .timer h2, .metrics h2, .prof-name h2 { font-size: 15px; font-weight: 800; }
 .view-state, .eyebrow { font: 700 11px/1.25 var(--latin); letter-spacing: .11em; }
 .view-state { gap: 7px; }
@@ -222,6 +225,7 @@ button:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
   .recipe-list tbody th { font-size: 13px; }
   .recipe-list td { font-size: 12px; }
   .bench-head { min-height: 30px; padding: 4px 10px; }
+  .loupe-toggle { min-height: 40px; margin: -3px 9px -3px auto; }
   .viewport { height: clamp(205px, 65vw, 420px); }
   .bench-foot { padding: 5px 9px; gap: 4px 6px; font-size: 11px; }
   .tilt { padding-left: 6px; }

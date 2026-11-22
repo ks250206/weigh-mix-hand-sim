@@ -16,6 +16,8 @@ interface HudProps {
   onSound: () => void
   graphics: GraphicsSettings
   onGraphics: (settings: GraphicsSettings) => void
+  loupe: boolean
+  onLoupe: () => void
   best: number
   onControl: (control: Control, down: boolean) => void
   onPause: (paused: boolean) => void
@@ -97,6 +99,7 @@ function FoldGuide({ count }: { count: number }) {
 
 const instructions = [
   ['移動', '作業台の上でマウスを動かすか、画面をなぞります。WASD・矢印キーでも移動できます。'],
+  ['手元拡大', 'Z キーまたは作業台の「手元拡大」で、グローブの先を2.5倍で表示します。折り目やスパチュラの先を確認できます。もう一度押すと閉じます。'],
   ['つかむ・放す', '器具に手を重ねてクリック、または F キー。タッチでは「つかむ／放す」を使います。もう一度押すと放します。使い終えた秤量ホイルを持っている時は F または「廃棄する」で片付けます。'],
   ['ホイルを折る', '原料ごとの専用ホイルを手前に置きます。Space または「折る」を押しながら、1回目は正方形の対角線、2回目は三角形の直角から長辺の中央へ破線をなぞり、4層の三角形にします。各回とも破線をはさむ角同士を重ねる動きでも折れます。1回ごとにボタンを離してください。タッチでは別の指でなぞります。'],
   ['天秤の風防', '左奥の天秤の前で R または「天秤の扉」。開けてホイルを置き、閉めて Space で風袋を引きます。粉を入れる時は再び開き、読み取る時は閉じます。'],
@@ -121,7 +124,7 @@ function Dialog({ title, children, onClose }: { title: string; children: ReactNo
 
 type DialogName = 'help' | 'restart' | 'graphics'
 
-export default function Hud({ state, scene, onStart, onRestart, sound, onSound, graphics, onGraphics, best, onControl, onPause }: HudProps) {
+export default function Hud({ state, scene, onStart, onRestart, sound, onSound, graphics, onGraphics, loupe, onLoupe, best, onControl, onPause }: HudProps) {
   const [dialog, setDialog] = useState<DialogName | null>(null)
   const playing = state.status === 'playing'
   const title = state.status === 'title'
@@ -175,7 +178,13 @@ export default function Hud({ state, scene, onStart, onRestart, sound, onSound, 
 
     <div className="console">
       <section className="bench" aria-label="グローブボックス作業台">
-        <div className="bench-head"><h2>作業台</h2><span className="view-state"><i className={'lamp' + (playing ? ' live' : '')} />{title ? 'STANDBY' : playing ? 'LIVE' : 'END'}</span></div>
+        <div className="bench-head">
+          <h2>作業台</h2>
+          <button type="button" className="loupe-toggle" aria-pressed={loupe} aria-keyshortcuts="Z" onClick={onLoupe}>
+            <kbd aria-hidden="true">Z</kbd>手元拡大
+          </button>
+          <span className="view-state"><i className={'lamp' + (playing ? ' live' : '')} />{title ? 'STANDBY' : playing ? 'LIVE' : 'END'}</span>
+        </div>
         <div className="viewport">{scene}</div>
         <div className="bench-foot"><span>グローブ</span><strong>{held ? LABELS[held] : '手ぶら'}</strong>
           {held && <span className="held-load">{load.toFixed(3)} g</span>}

@@ -33,6 +33,10 @@ const styles = `
 .gb-fold-guide i,.gb-fold-guide b {position:absolute;left:0;top:0}
 .gb-fold-guide i {height:0;border-top:2px dashed #145b8c;transform-origin:left center;filter:drop-shadow(0 1px 0 #fff)}
 .gb-fold-guide b {width:7px;height:7px;margin:-3.5px;background:#e8fcff;border:1.5px solid #095077;border-radius:50%;box-shadow:0 0 0 1px #fff}
+.gb-loupe {position:absolute;top:28px;right:10px;pointer-events:none;z-index:6;border:2px solid #edf4ff;outline:1px solid #304969;box-shadow:0 2px 8px #10294755;border-radius:4px;overflow:hidden;background:#9dacbc}
+.gb-loupe[data-left] {right:auto;left:10px}
+.gb-loupe canvas {display:block}
+.gb-loupe span {position:absolute;bottom:3px;left:4px;color:#fff;background:#1b3054de;border-radius:2px;padding:1px 4px;font:600 10px/1.4 monospace}
 .gb-cursor {position:absolute;top:0;left:0;width:15px;height:15px;margin:-7.5px;border:1.5px solid #ffffff;border-radius:50%;box-shadow:0 0 0 1px #233957e6;pointer-events:none;z-index:2}
 .gb-cursor::after {content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;background:#173eab;border:1px solid #ffffff;box-sizing:content-box;border-radius:50%;transform:translate(-50%,-50%)}
 `
@@ -40,6 +44,7 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   setGraphics(settings: GraphicsSettings): void
   draw(state: GameState): void
   pick(clientX: number, clientY: number): Station
+  setLoupe(enabled: boolean): void
   destroy(): void
 }> {
   let graphics = initialGraphics
@@ -104,7 +109,16 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     return dot
   })
   guide.append(crease, ...foldPoints)
-  skin.append(style, cursor, guide)
+  const loupe = document.createElement('div'), detail = document.createElement('canvas')
+  const scaleLabel = document.createElement('span')
+  scaleLabel.textContent = '2.5×'
+  loupe.className = 'gb-loupe'
+  loupe.setAttribute('aria-label', '手元の拡大表示')
+  loupe.hidden = true
+  loupe.append(detail, scaleLabel)
+  skin.append(style, cursor, guide, loupe)
+  let detailContext: CanvasRenderingContext2D | null = null
+  let loupeLeft = false, loupeWidth = 0, loupeHeight = 0
   const position = host.style.position
   if (getComputedStyle(host).position === 'static') host.style.position = 'relative'
   app.canvas.style.display = 'block'
@@ -144,6 +158,8 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   const resize = () => {
     width = Math.max(1, host.clientWidth)
     height = Math.max(1, host.clientHeight)
+    loupeWidth = Math.round(Math.min(320, width * 0.43))
+    loupeHeight = Math.round(Math.min(248, height * 0.39))
     app.renderer.resize(width, height, graphics.resolution)
     view.width = width
     view.height = height
@@ -491,10 +507,38 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       mesh.scale.set(grain.radius, grain.radius * (airborne ? 0.84 : 0.57), grain.radius * 0.91)
     }
     app.render()
+    if (!loupe.hidden && detailContext && target) {
+      // Copy the WebGL drawing buffer in this frame, before the browser presents it.
+      // CSS dimensions and the main renderer's current pixel resolution are independent.
+      const density = Math.min(window.devicePixelRatio || 1, 1.5)
+      const w = Math.round(loupeWidth * density), h = Math.round(loupeHeight * density)
+      if (detail.width !== w || detail.height !== h) {
+        detail.width = w
+        detail.height = h
+      }
+      detail.style.width = loupeWidth + 'px'
+      detail.style.height = loupeHeight + 'px'
+      if (target.x < width * 0.44) loupeLeft = false
+      else if (target.x > width * 0.56) loupeLeft = true
+      loupe.toggleAttribute('data-left', loupeLeft)
+      const wrist = toolWrist && project(toolWrist.position.x, toolWrist.position.y, toolWrist.position.z)
+      const cropWidth = loupeWidth / 2.5, cropHeight = loupeHeight / 2.5
+      // Favor the working point; include the fingers on the handle whenever it fits.
+      const centerX = target.x + (wrist ? Math.max(-cropWidth * 0.35, Math.min(cropWidth * 0.35, (wrist.x - target.x) * 0.45)) : 0)
+      const centerY = target.y + (wrist ? Math.max(-cropHeight * 0.35, Math.min(cropHeight * 0.35, (wrist.y - target.y) * 0.45)) : 0)
+      const sx = Math.max(0, Math.min(width - cropWidth, centerX - cropWidth / 2))
+      const sy = Math.max(0, Math.min(height - cropHeight, centerY - cropHeight / 2))
+      const rx = app.canvas.width / width, ry = app.canvas.height / height
+      detailContext.drawImage(app.canvas, sx * rx, sy * ry, cropWidth * rx, cropHeight * ry, 0, 0, w, h)
+    }
   }
   return {
     draw,
     pick,
+    setLoupe(enabled) {
+      if (enabled) detailContext ??= detail.getContext('2d', { alpha: false })
+      loupe.hidden = !enabled || !detailContext
+    },
     setGraphics(next) {
       const resolutionChanged = graphics.resolution !== next.resolution
       if (graphics.antialiasing !== next.antialiasing) {
