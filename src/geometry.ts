@@ -4,6 +4,7 @@ import type { GameState, ObjectId, Station, TableObject } from './contract.ts'
 /** Scene units, shared by contact, interaction, pouring and drawing. */
 export const WORLD_WIDTH = 12
 export const WORLD_DEPTH = 6.5
+export const TOPPLE_ANGLE = 1.36
 export const sceneDistance = (a: Station, b: Station) =>
   Math.hypot((a.x - b.x) * WORLD_WIDTH, (a.y - b.y) * WORLD_DEPTH)
 export const toWorld = (p: Station) => ({ x: (p.x - 0.5) * WORLD_WIDTH, z: (p.y - 0.5) * WORLD_DEPTH })
@@ -19,6 +20,19 @@ export const scaleGeometry = { width: 1.59, depth: 1.40, panHeight: 0.515, panRa
 export const cleanerGeometry = { width: 1.42, depth: 1.0, height: 0.9 }
 export const isJar = (id: ObjectId): id is 'jarA' | 'jarB' | 'jarC' => id === 'jarA' || id === 'jarB' || id === 'jarC'
 export const jarPowderHeight = (o: TableObject) => 0.19 + 0.917 * Math.sqrt(Math.min(1, mass(o) / 5))
+
+/** Container3D.origin rotates about position + origin, unlike a conventional pivot. */
+export function vesselPose(id: ObjectId, o: TableObject) {
+  const spec = id in vesselGeometry && id !== 'cap' ? vesselGeometry[id as keyof typeof vesselGeometry] : null
+  const angle = spec ? o.toppleAngle ?? (o.toppled ? Math.sign(o.tilt || 1) * TOPPLE_ANGLE : 0) : 0
+  if (!spec || (!o.toppled && angle === 0)) return { tilt: o.tilt, originY: 0, offsetY: 0 }
+  const originY = spec.height * 0.5 * Math.min(1, Math.abs(angle) / TOPPLE_ANGLE)
+  return {
+    tilt: angle,
+    originY,
+    offsetY: originY * (Math.cos(angle) - 1) + spec.radius * Math.abs(Math.sin(angle)),
+  }
+}
 
 /** The same outline is used by Matter and mouse picking; no invisible square after a fold. */
 export function foilOutline(o: Pick<TableObject, 'foldCount' | 'unfolded'>): { x: number; z: number }[] {
@@ -82,10 +96,13 @@ export function heldObjectHeight(s: GameState) {
 }
 
 function lipOffset(id: ObjectId, o: TableObject) {
-  const tilt = o.tilt, sign = tilt < 0 ? -1 : 1
+  const pose = vesselPose(id, o), tilt = pose.tilt, sign = tilt < 0 ? -1 : 1
   const lip = isJar(id) ? 1.25 : id === 'mortar' ? 0.72 : id === 'vial' ? 0.75 : isFoil(id) ? 0.12 : 0
   const edge = isJar(id) ? 0.29 : id === 'mortar' ? 0.59 : id === 'vial' ? 0.184 : isFoil(id) ? 0.40 : 0.10
-  return { dx: sign * edge * Math.cos(tilt) + lip * Math.sin(tilt), dy: lip * Math.cos(tilt) - sign * edge * Math.sin(tilt) }
+  return {
+    dx: sign * edge * Math.cos(tilt) + (lip - pose.originY) * Math.sin(tilt),
+    dy: pose.offsetY + pose.originY + (lip - pose.originY) * Math.cos(tilt) - sign * edge * Math.sin(tilt),
+  }
 }
 function clearReceiverRims(s: GameState, base: number) {
   const held = s.hand.held

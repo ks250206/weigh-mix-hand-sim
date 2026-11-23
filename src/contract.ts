@@ -52,6 +52,7 @@ export const LABELS: Record<ObjectId, string> = {
 export interface TableObject extends Station {
   tilt: number; // signed radians
   yaw?: number; // scene yaw from in-plane rigid-body rotation, radians
+  toppleAngle?: number; // current signed fall angle, shared by contact, drawing and powder release
   toppled: boolean;
   open: boolean;
   foldCount: 0 | 1 | 2;

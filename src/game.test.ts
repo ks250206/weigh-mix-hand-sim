@@ -102,6 +102,10 @@ function bench(mode: 'standard' | 'practice' = 'practice') {
     down(HOME.spatula); door(false); action(); door(true); take(weighFoils[p]); pourTo('mortar')
     assert.equal(s.objects[weighFoils[p]].spent, true)
     grip()
+    // Clear the carrying path before moving the large mortar across the bench.
+    to(bottles[p]); action()
+    assert.equal(s.objects[bottles[p]].open, false)
+    take(bottles[p]); down(HOME[bottles[p]])
   }
   function load() {
     take('mortar'); down(workPositions.mortar)
@@ -323,6 +327,24 @@ test('a dirty spoon cannot return one ingredient into a different stock bottle',
   assert.equal(s.objects.jarB.a, 0)
   assert.equal(s.objects.spatula.a, 0.2)
   assert.match(s.actionReason, /戻せない/)
+})
+
+test('picking up and putting down a rotated object preserves yaw through the game loop', () => {
+  for (const id of ['jarA', 'spatula'] as const) {
+    const s = startGame('practice')
+    const yaw = id === 'jarA' ? 0.7 : -0.6
+    Object.assign(s.objects[id], { x: 0.45, y: 0.72, yaw })
+    const aim = isTool(id) ? toolHandle(id, s.objects[id]) : s.objects[id]
+    Object.assign(s.hand, { x: aim.x, y: aim.y })
+    const input: GameInput = { targetX: aim.x, targetY: aim.y, action: false, gripPressed: true, tilt: 0 }
+    stepGame(s, input, 0.02)
+    assert.equal(s.hand.held, id)
+    assert.ok(Math.abs(s.objects[id].yaw! - yaw) < 1e-6, 'pickup must preserve the existing direction')
+    stepGame(s, { ...input, gripPressed: false }, 0.25)
+    stepGame(s, input, 0.02)
+    assert.equal(s.hand.held, null)
+    assert.ok(Math.abs(s.objects[id].yaw! - yaw) < 1e-6, 'release must preserve the carried direction')
+  }
 })
 
 test('uncapped held bottles spill when tilted or jerked, while capped bottles retain powder', () => {

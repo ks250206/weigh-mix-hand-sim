@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Container3D } from '@pixi/3d'
 import { startGame, stepGame } from './game.ts'
 import { HOME } from './contract.ts'
 import { TablePhysics } from './physics.ts'
-import { heldObjectHeight, pointOnFoil, pourMouth, receiverSpec, sceneDistance, vesselGeometry, WORLD_WIDTH, WORLD_DEPTH } from './geometry.ts'
+import { heldObjectHeight, pointOnFoil, pourMouth, receiverSpec, sceneDistance, vesselGeometry, vesselPose, WORLD_WIDTH, WORLD_DEPTH } from './geometry.ts'
 
 const dt = 1 / 120
 
@@ -158,4 +159,38 @@ test('a tilted collection foil clears the vial rim and the pour edge changes wit
   const left = pourMouth('foil2', s.objects.foil2, height)
   assert.ok(left.x < s.objects.foil2.x && right.x > s.objects.foil2.x)
   assert.ok(Math.abs(left.height - right.height) < 1e-6)
+})
+
+test('a falling vessel stays on the bench and its rendered mouth matches the powder origin', () => {
+  for (const sign of [-1, 1]) for (const angle of [0.2, 0.8, 1.36]) {
+    const object = { ...startGame().objects.jarA, x: 0.5, y: 0.5, yaw: 0.7,
+      toppled: true, tilt: sign * 0.98, toppleAngle: sign * angle }
+    const pose = vesselPose('jarA', object)
+    const node = new Container3D()
+    node.origin.set(0, pose.originY, 0)
+    node.position.y = pose.offsetY
+    node.rotation.set(0, object.yaw, -pose.tilt)
+    const lowest = node.toGlobal({ x: sign * vesselGeometry.jarA.radius, y: 0, z: 0 })
+    assert.ok(Math.abs(lowest.y) < 1e-6, `lowest edge floated at ${lowest.y}`)
+    const rendered = node.toGlobal({ x: sign * vesselGeometry.jarA.mouth, y: 1.25, z: 0 })
+    const mouth = pourMouth('jarA', object, 0)
+    assert.ok(Math.abs(rendered.x - (mouth.x - 0.5) * WORLD_WIDTH) < 1e-6)
+    assert.ok(Math.abs(rendered.z - (mouth.y - 0.5) * WORLD_DEPTH) < 1e-6)
+    assert.ok(Math.abs(rendered.y - mouth.height) < 1e-6)
+  }
+
+  const s = startGame(), jar = s.objects.jarA
+  Object.assign(jar, { x: 0.45, y: 0.65, toppled: true, tilt: 0.98 })
+  const table = new TablePhysics(s)
+  for (let i = 0; i < 80; i++) table.step(s, s.hand, dt)
+  assert.ok(jar.toppleAngle! > 1.3)
+  Object.assign(jar, { toppled: false, tilt: 0, toppleAngle: 0 })
+  Object.assign(s.hand, { x: jar.x, y: jar.y, held: 'jarA' })
+  table.lift('jarA')
+  const neighbor = { x: jar.x + 1.14 / WORLD_WIDTH, y: jar.y }
+  Object.assign(s.objects.jarB, neighbor)
+  table.release('jarB', neighbor, { x: 0, y: 0 }, false)
+  for (let i = 0; i < 10; i++) table.step(s, { x: 0.9, y: 0.9 }, dt)
+  assert.ok(sceneDistance(s.objects.jarB, neighbor) < 0.001,
+    'immediate pickup must restore the upright footprint before carrying past a neighbor')
 })

@@ -7,15 +7,22 @@ async function ready(page: Page) {
   await expect(page.getByTestId('start-practice')).toBeEnabled()
 }
 
+async function stationAnchor(page: Page, id: string) {
+  const station = page.locator(`.gb-station[data-station="${id}"]`)
+  return station.evaluate(element => {
+    // display:none makes Chromium report a computed transform of "none".
+    // The inline transform still contains the scene's projected equipment point.
+    const anchor = new DOMMatrix((element as HTMLElement).style.transform)
+    const surface = element.closest('.gb-window')!.getBoundingClientRect()
+    return { x: surface.x + anchor.m41, y: surface.y + anchor.m42 }
+  })
+}
+
 async function pointAtStation(page: Page, id: string) {
   const station = page.locator(`.gb-station[data-station="${id}"]`)
   // Labels appear on hover to keep the bench readable. Aim at the rendered
   // station anchor before using its visible caption; do not change game state.
-  const point = await station.evaluate(element => {
-    const anchor = new DOMMatrix(getComputedStyle(element).transform)
-    const surface = element.closest('.gb-window')!.getBoundingClientRect()
-    return { x: surface.x + anchor.m41, y: surface.y + anchor.m42 }
-  })
+  const point = await stationAnchor(page, id)
   await page.mouse.move(point.x, point.y)
   await expect(station.locator('span')).toBeVisible()
   await station.locator('span').hover()
@@ -76,6 +83,7 @@ test('critical measurements and controls stay visible on a touch screen', async 
   }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
   expect(overflow, 'the mobile page must not scroll sideways').toBe(false)
+  await page.screenshot({ path: info.outputPath('mobile-playing.png'), fullPage: false })
 })
 
 test('keyboard holding a focused tilt button remains pressed until keyup', async ({ page }, info) => {
@@ -135,7 +143,12 @@ test('a used spatula is wiped with a fresh wipe and must dry before reuse', asyn
   test.skip(info.project.name !== 'desktop', 'pointer and keyboard workflow')
   await ready(page)
   await page.getByTestId('start-practice').click()
-  await pointAtStation(page, 'jarA')
+  const reagent = await pointAtStation(page, 'jarA')
+  await reagent.locator('span').click()
+  await expect(page.getByTestId('hand-readout').locator('strong').first()).toHaveText('Li₂S')
+  const work = await stationAnchor(page, 'work')
+  await page.mouse.click(work.x, work.y)
+  await expect(page.getByTestId('hand-readout').locator('strong').first()).toHaveText('手ぶら')
   await expect(page.getByTestId('action-control')).toContainText('開栓')
   await page.keyboard.down('Space')
   await expect(page.getByTestId('action-control')).toContainText('蓋を閉める')

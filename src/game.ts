@@ -249,7 +249,6 @@ function pickup(s: EngineState, table: TablePhysics) {
     s.hand.toolPickup = undefined
     table.release(held, o, { x: s.hand.vx, y: s.hand.vy }, onPan)
     o.tilt = 0
-    o.yaw = 0
     s.hand.held = null
     s.hand.tilt = 0
     return
@@ -280,7 +279,7 @@ function pickup(s: EngineState, table: TablePhysics) {
   }
   table.lift(id)
   if (isTool(id)) s.hand.toolPickup = { x: o.x, y: o.y, yaw: o.yaw ?? 0, progress: 0 }
-  o.yaw = 0
+  o.toppleAngle = 0
   s.hand.held = id
   s.hand.tilt = o.tilt
 }
@@ -528,14 +527,16 @@ function interaction(s: EngineState, input: GameInput): Task {
   }
   if (!held) {
     const nearFoil = [...Object.values(weighFoils), 'foil2' as const]
-      .filter(id => near(id, 0.82) && inWork(o[id]) && !o[id].spent)
+      .filter(id => near(id, 0.82) && !o[id].spent)
       .sort((a, b) => sceneDistance(s.hand, o[a]) - sceneDistance(s.hand, o[b]))[0]
     if (nearFoil && !o[nearFoil].unfolded) {
+      if (!inWork(o[nearFoil])) return blocked(nearFoil, 'fold', 'ホイルを F でつかみ、手前の作業面に置いてから折ろう。')
       return o[nearFoil].folded
         ? ready(nearFoil, 'unfold', 'Space を一度離し、長押しで開く。折り筋付きの受け皿として使う。')
         : ready(nearFoil, 'fold', o[nearFoil].foldCount === 0 ? 'Space を押して対角線をなぞる。1回ごとに離そう。' : 'Space を押して2本目の折り目をなぞる。')
     }
-    const jar = Object.values(bottles).find(id => near(id, 0.56) && inWork(o[id]))
+    const jar = Object.values(bottles).find(id => near(id, 0.56))
+    if (jar && !inWork(o[jar])) return blocked(jar, 'open', '原料瓶を F でつかみ、手前の作業面に置いてから開閉しよう。')
     if (jar) return o[jar].toppled ? blocked(jar, 'open', '原料瓶が倒れている。F で起こそう。')
       : ready(jar, 'open', `Space 長押しで ${LABELS[jar]} を${o[jar].open ? '閉じる' : '開ける'}。`)
   }

@@ -1,7 +1,7 @@
 import Matter from 'matter-js'
 import { isFoil, isTool, isWeighFoil } from './contract.ts'
 import type { GameState, ObjectId, Station } from './contract.ts'
-import { cleanerGeometry, foilOutline, heldObjectHeight, scaleGeometry, sceneDistance, vesselGeometry, WORLD_DEPTH, WORLD_WIDTH } from './geometry.ts'
+import { cleanerGeometry, foilOutline, heldObjectHeight, scaleGeometry, sceneDistance, TOPPLE_ANGLE, vesselGeometry, WORLD_DEPTH, WORLD_WIDTH } from './geometry.ts'
 
 const { Bodies, Body, Composite, Engine, Events } = Matter
 // The rendered bench is 12 by 6.5 scene units. Preserve that aspect ratio for contact normals.
@@ -50,7 +50,6 @@ export class TablePhysics {
   private carriedVelocity = { x: 0, y: 0 }
   private carried: Matter.Body | undefined
   private supported: LooseId | null = null
-  private toppleAmounts = new Map<LooseId, number>()
   private shapeVersions = new Map<LooseId, string>()
 
   constructor(s: GameState) {
@@ -162,13 +161,15 @@ export class TablePhysics {
   private updateVessel(id: LooseId, body: Matter.Body, s: GameState, dt: number) {
     if (!(id in vesselGeometry) || id === 'cap') return
     const spec = vesselGeometry[id as keyof typeof vesselGeometry]
-    const target = s.objects[id].toppled ? 1 : 0
-    const previous = this.toppleAmounts.get(id) ?? 0
-    let amount = previous + (target - previous) * (1 - Math.exp(-dt * 12))
-    if (Math.abs(target - amount) < 0.003) amount = target
-    this.toppleAmounts.set(id, amount)
-    const version = String(Math.round(amount * 50))
-    if (this.shapeVersions.get(id) === version || (!previous && !amount)) return
+    const object = s.objects[id]
+    const target = object.toppled ? Math.sign(object.tilt || 1) * TOPPLE_ANGLE : 0
+    const previous = object.toppleAngle ?? 0
+    let angleNow = previous + (target - previous) * (1 - Math.exp(-dt * 12))
+    if (Math.abs(target - angleNow) < 0.003) angleNow = target
+    object.toppleAngle = angleNow
+    const amount = Math.abs(angleNow) / TOPPLE_ANGLE
+    const version = amount === 0 ? 'upright' : String(Math.round(amount * 50))
+    if (this.shapeVersions.get(id) === version || (!amount && !this.shapeVersions.has(id))) return
     this.shapeVersions.set(id, version)
     const center = { ...body.position }, angle = body.angle
     Body.setAngle(body, 0)
@@ -176,7 +177,7 @@ export class TablePhysics {
       const circle = Bodies.circle(0, 0, spec.radius * 100)
       Body.setVertices(body, circle.vertices)
     } else {
-      const tilt = amount * 1.36
+      const tilt = Math.abs(angleNow)
       const length = (2 * spec.radius * Math.cos(tilt) + spec.height * Math.sin(tilt)) * 100
       const depth = spec.radius * 200
       Body.setVertices(body, [
@@ -241,10 +242,10 @@ export class TablePhysics {
     this.gloveVelocity.x = (this.glove.position.x - previous.x) / (dt * 60)
     this.gloveVelocity.y = (this.glove.position.y - previous.y) / (dt * 60)
     for (const [id, body] of this.bodies) {
-      if (body.isStatic) continue
       const o = s.objects[id]
-      if (isFoil(id)) this.updateSheet(id, body, o)
       this.updateVessel(id, body, s, dt)
+      if (body.isStatic) continue
+      if (isFoil(id)) this.updateSheet(id, body, o)
       // Aim over an item to reach above it. Keep the glove raised until it clears that item,
       // so leaving a bottle mouth or a mortar after stirring cannot drag it along.
       const radius = id in vesselGeometry ? vesselGeometry[id as keyof typeof vesselGeometry].radius : isFoil(id) ? 0.6 : 0.5

@@ -5,7 +5,7 @@ import { Application } from 'pixi.js'
 import { FxaaEffect } from '@pixi/3d/extras'
 import { defaultGraphics, type GraphicsSettings } from './graphics'
 import { createGame } from './game'
-import { heldObjectHeight, jarPowderHeight, pointOnFoil, pourMouth, sceneDistance, vesselGeometry } from './geometry'
+import { heldObjectHeight, jarPowderHeight, pointOnFoil, pourMouth, sceneDistance, vesselGeometry, vesselPose } from './geometry'
 import { PowderPhysics } from './powder'
 import { foldStroke, foilIds, HOME, inWork, isFoil, isTool, toolHandle, isWeighFoil, LABELS, mass, weighFoils, type GameState, type ObjectId, type Station } from './contract'
 import { ANCHOR_HEIGHT, chamber, TABLE_DEPTH, TABLE_WIDTH, worldX, worldZ } from './render/chamber'
@@ -151,7 +151,7 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     caption.textContent = LABELS[id]
     marker.appendChild(caption)
     skin.appendChild(marker)
-    return { id, model, marker, caption, shadow, ax: 0, ay: 0, offset: 0, tagWidth: 0, tagHeight: 0, topple: 0 }
+    return { id, model, marker, caption, shadow, ax: 0, ay: 0, offset: 0, tagWidth: 0, tagHeight: 0 }
   })
   const goal = f.mesh(root, f.ring, f.ink(0x174edb), 0, 0.034, 0, 1)
   const working = f.mesh(root, f.ring, f.ink(0x1b9f86), 0, 0.039, 0, 1)
@@ -406,13 +406,10 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       const px = pickup ? (1 - lift) * worldX(pickup.x) + lift * x : x
       const pz = pickup ? (1 - lift) * worldZ(pickup.y) + lift * z : z
       model.root.visible = !sealedCap
-      entry.topple += (Number(o.toppled) - entry.topple) * (1 - Math.exp(-dt * 12))
-      if (Math.abs(Number(o.toppled) - entry.topple) < 0.003) entry.topple = Number(o.toppled)
-      const fallingAngle = -Math.sign(o.tilt || 1) * 1.36 * entry.topple
-      const pivot = model.height * 0.5 * entry.topple
-      model.root.origin.set(0, pivot, 0)
-      model.root.position.set(px, y + pivot * Math.abs(Math.cos(fallingAngle)) + model.radius * Math.abs(Math.sin(fallingAngle)), pz)
-      model.root.rotation.z = entry.topple ? fallingAngle : -o.tilt
+      const pose = vesselPose(id, o)
+      model.root.origin.set(0, pose.originY, 0)
+      model.root.position.set(px, y + pose.offsetY, pz)
+      model.root.rotation.z = -pose.tilt
       const objectYaw = o.yaw ?? 0, initialYaw = pickup?.yaw ?? objectYaw
       const turn = Math.atan2(Math.sin(objectYaw - initialYaw), Math.cos(objectYaw - initialYaw))
       model.root.rotation.y = heldTool ? initialYaw + lift * turn : objectYaw
@@ -443,7 +440,9 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
         const top = width < 500 && rearInstrument ? project(x, y + model.height, z - 0.25) : null
         entry.offset = top ? top.y - anchor.y - entry.tagHeight - 2 : tag.y - anchor.y + 2
       }
-      const relevant = s.status === 'title' || id === goalId || id === s.interactionTarget || id === hovering || id === held || id === s.supportTarget
+      const titleLabel = s.status === 'title' && (width >= 500 ||
+        id === 'scale' || id === 'foil' || id === 'cleaner' || id === 'jarA' || id === 'jarB' || id === 'jarC')
+      const relevant = titleLabel || id === goalId || id === s.interactionTarget || id === hovering || id === held || id === s.supportTarget
       marker.hidden = !relevant ||
         heldTool || sealedCap ||
         (id === 'work' && goalId !== 'work') ||
