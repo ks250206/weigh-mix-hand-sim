@@ -12,7 +12,8 @@ export type ObjectId =
   | "spatula"
   | "pestle"
   | "vial"
-  | "cap";
+  | "cap"
+  | "cleaner";
 export type Station = { x: number; y: number };
 export const HOME: Record<ObjectId, Station> = {
   scale: { x: 0.15, y: 0.18 },
@@ -28,6 +29,7 @@ export const HOME: Record<ObjectId, Station> = {
   pestle: { x: 0.65, y: 0.4 },
   vial: { x: 0.89, y: 0.64 },
   cap: { x: 0.88, y: 0.83 },
+  cleaner: { x: 0.91, y: 0.14 },
   work: { x: 0.5, y: 0.75 },
 };
 export const LABELS: Record<ObjectId, string> = {
@@ -45,6 +47,7 @@ export const LABELS: Record<ObjectId, string> = {
   pestle: "乳棒",
   vial: "サンプル瓶",
   cap: "瓶の蓋",
+  cleaner: "無水エタノール清拭台",
 };
 export interface TableObject extends Station {
   tilt: number; // signed radians
@@ -54,6 +57,7 @@ export interface TableObject extends Station {
   foldCount: 0 | 1 | 2;
   foldProgress: number; // current crease, 0..1
   folded: boolean;
+  unfolded: boolean; // creased foil reopened into a usable tray
   spent: boolean;
   a: number; // Li2S, g
   b: number; // GeS2, g
@@ -66,6 +70,8 @@ export interface GameInput {
   doorPressed?: boolean;
   action: boolean;
   tilt: number;
+  support?: boolean;
+  discard?: boolean;
 }
 export interface PowderTransfer extends Station {
   id: number;
@@ -75,8 +81,30 @@ export interface PowderTransfer extends Station {
   grams: number;
   targetX: number;
   targetY: number;
+  trajectory?: { height: number; vx: number; vz: number; targetHeight: number };
 }
 export interface GameState {
+  mode: "standard" | "practice";
+  elapsed: number;
+  stageNames: string[];
+  stageTimes: number[];
+  discardedMass: Record<Powder, number>;
+  toolHygiene: {
+    state: "clean" | "dirty" | "wet";
+    residue: Powder[];
+    wipeProgress: number;
+    dryRemaining: number;
+    wipesUsed: number;
+  };
+  mixCoverage: number[];
+  supportTarget: ObjectId | null;
+  actionLabel: string;
+  interactionTarget: ObjectId | null;
+  actionReady: boolean;
+  actionReason: string;
+  professorFeedback: string;
+  needs: Record<Powder, number>;
+  stats: { accidents: number; topples: number; reweighs: number; maxSpill: number; completedSteps: number };
   powderTransfers: PowderTransfer[];
   transferSeq: number;
   status: "title" | "playing" | "won" | "lost";
@@ -89,6 +117,7 @@ export interface GameState {
   anger: number;
   mixed: number; // seconds, anger 0..100, uniformity 0..100
   scaleMass: number;
+  scaleStable: boolean;
   tared: boolean;
   scoopDepth: number;
   readings: Record<Powder, number>;
@@ -115,6 +144,7 @@ export const bottles = { a: "jarA", b: "jarB", c: "jarC" } as const;
 // Nominal 2.000 g LGPS batch: 5 Li2S : 1 GeS2 : 1 P2S5 (moles), rounded to 1 mg.
 export const recipe = { a: 0.78, b: 0.465, c: 0.755 };
 export const foilWeight = 0.12;
+export const DRY_SECONDS = 2.4;
 export const workArea = { left: 0.25, right: 0.75, back: 0.53, front: 0.95 };
 export function inWork(p: Station) {
   return (

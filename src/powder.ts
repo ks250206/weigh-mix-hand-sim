@@ -1,5 +1,6 @@
 import Matter from 'matter-js'
 import type { ObjectId, Powder, PowderTransfer } from './contract.ts'
+import { WORLD_WIDTH, WORLD_DEPTH, vesselGeometry } from './geometry.ts'
 
 const { Bodies, Body, Composite, Engine } = Matter
 const GRAVITY = 14.5           // scene units / s²
@@ -36,21 +37,26 @@ interface MovingGrain extends PowderDot {
   receiver: ObjectId | null
   dz: number
   age: number
+  floorHeight: number
+  entryHeight: number
 }
 
 const surfaces = {
-  spatula: { category: 2, height: 1.12, width: 0.24 },
-  foil: { category: 4, height: 0.53, width: 0.60 },
-  foilB: { category: 8, height: 0.53, width: 0.60 },
-  foilC: { category: 16, height: 0.53, width: 0.60 },
-  mortar: { category: 32, height: 0.36, width: 1.08 },
-  foil2: { category: 64, height: 0.055, width: 0.66 },
-  vial: { category: 128, height: 0.18, width: 0.40 },
+  spatula: { category: 2, height: 1.12, rim: 1.12, width: 0.24 },
+  foil: { category: 4, height: 0.61, rim: 0.645, width: 0.82 },
+  foilB: { category: 8, height: 0.61, rim: 0.645, width: 0.82 },
+  foilC: { category: 16, height: 0.61, rim: 0.645, width: 0.82 },
+  mortar: { category: 32, height: 0.36, rim: 0.72, width: vesselGeometry.mortar.mouth * 2 },
+  foil2: { category: 64, height: 0.095, rim: 0.13, width: 0.82 },
+  vial: { category: 128, height: 0.18, rim: 0.75, width: vesselGeometry.vial.mouth * 2 },
+  jarA: { category: 512, height: 1.107, rim: 1.25, width: vesselGeometry.jarA.mouth * 2 },
+  jarB: { category: 1024, height: 1.107, rim: 1.25, width: vesselGeometry.jarB.mouth * 2 },
+  jarC: { category: 2048, height: 1.107, rim: 1.25, width: vesselGeometry.jarC.mouth * 2 },
 } as const
 type Receiver = keyof typeof surfaces
 const isReceiver = (id: ObjectId | null): id is Receiver => id !== null && Object.hasOwn(surfaces, id)
-const worldX = (x: number) => (x - 0.5) * 12
-const worldZ = (y: number) => (y - 0.5) * 6.5
+const worldX = (x: number) => (x - 0.5) * WORLD_WIDTH
+const worldZ = (y: number) => (y - 0.5) * WORLD_DEPTH
 
 // Side-view gravity and contact are solved by Matter. Depth carries the lateral
 // release velocity. Each receiving vessel has its own collision layer.
@@ -86,6 +92,7 @@ export class PowderPhysics {
     const spec = receiver && surfaces[receiver]
     const tx = worldX(event.targetX), tz = worldZ(event.targetY)
     const category = spec ? spec.category : 256
+    const floor = event.trajectory?.targetHeight ?? (spec ? spec.height : 0)
     if (receiver && spec) {
       let catcher = this.catchers.get(receiver)
       if (!catcher) {
@@ -96,34 +103,40 @@ export class PowderPhysics {
         this.catchers.set(receiver, catcher)
         Composite.add(this.engine.world, catcher)
       }
-      Body.setPosition(catcher, { x: tx * PX, y: -spec.height * PX + 4 })
+      Body.setPosition(catcher, { x: tx * PX, y: -floor * PX + 4 })
     }
-    const height = spec ? spec.height : 0
-    const lip = event.from.startsWith('jar') ? 1.22 : event.from === 'spatula' ? 0.99
-      : event.from === 'mortar' ? 1.08 : event.from === 'vial' ? 0.78 : 0.69
+    const lip = event.trajectory?.height ?? (event.from.startsWith('jar') ? 1.22 : event.from === 'spatula' ? 0.99
+      : event.from === 'mortar' ? 1.08 : event.from === 'vial' ? 0.78 : 0.69)
     const x = worldX(event.x), z = worldZ(event.y)
-    const travelTime = Math.sqrt(2 * Math.max(0.10, lip - height) / GRAVITY)
+    const vx = event.trajectory?.vx ?? 0, vz = event.trajectory?.vz ?? 0
+    const entry = spec ? Math.max(floor, spec.rim) : 0
+    const travelTime = Math.sqrt(2 * Math.max(0.01, lip - entry) / GRAVITY)
+    // Choose representatives of the already-accounted caught portion, without changing
+    // their velocity to aim at the receiver. The stream follows the actual pouring edge.
+    const candidates = spec ? stream.filter(p => Math.hypot(x + p.x + vx * travelTime - tx,
+      z + p.z + vz * travelTime - tz) <= spec.width / 2) : stream
+    const samples = candidates.length ? candidates : stream
     const count = Math.min(7, Math.max(1, Math.ceil(event.grams * 68 * this.density)))
     for (let i = 0; i < count; i++) {
-      if (this.moving.length >= this.budget) this.remove(0)
+      // Coalesce a dense stream by omitting extra representatives, never by erasing a
+      // grain that the player is watching in flight.
+      if (this.moving.length >= this.budget) break
       const seed = event.id * 5 + i
-      const scatter = stream[seed % stream.length]
+      const scatter = samples[seed % samples.length]
       const radius = 0.024 + (seed % 6) * 0.0028
-      const releaseX = x + scatter.x * 0.23
-      const releaseZ = z + scatter.z * 0.23
+      const releaseX = x + scatter.x
+      const releaseZ = z + scatter.z
       const body = Bodies.circle(releaseX * PX, -(lip + i * 0.014) * PX, radius * PX, {
-        restitution: 0.23, friction: 0.65, frictionAir: 0.009, slop: 0.02,
+        restitution: 0.12, friction: 0.65, frictionAir: 0, slop: 0.02,
         collisionFilter: { category, mask: category | 1 },
       }, 8)
-      // Successful streams converge on the receiver. Misses fan out across the bench.
-      const spread = receiver === 'spatula' ? 0.43 : receiver ? 0.84 : 1.9
       Body.setVelocity(body, {
-        x: ((tx - releaseX + scatter.x * spread) / travelTime) * PX * STEP,
-        y: -0.31 * ((seed % 3) + 1),
+        x: vx * PX * STEP,
+        y: 0,
       })
       Composite.add(this.engine.world, body)
       this.moving.push({ body, x: releaseX, y: lip, z: releaseZ, kind: event.kind, radius,
-        receiver, dz: (tz - releaseZ + scatter.z * spread) / travelTime, age: 0 })
+        receiver, dz: vz, age: 0, floorHeight: floor, entryHeight: entry })
     }
   }
 
@@ -141,10 +154,22 @@ export class PowderPhysics {
       for (let i = this.moving.length - 1; i >= 0; i--) {
         const grain = this.moving[i], body = grain.body
         grain.age += STEP
+        // Small representative grains may overlap at emission. Resolve the bench's
+        // hard floor explicitly after the iterative solver so none tunnel underneath.
+        const benchTop = -grain.radius * PX * 0.6
+        if (body.position.y > benchTop) {
+          Body.setPosition(body, { x: body.position.x, y: benchTop })
+          if (body.velocity.y > 0) Body.setVelocity(body, { x: body.velocity.x, y: 0 })
+        }
         grain.x = body.position.x / PX
         grain.y = -body.position.y / PX
         grain.z += grain.dz * STEP
-        const restingHeight = grain.receiver && isReceiver(grain.receiver) ? surfaces[grain.receiver].height : 0
+        const restingHeight = grain.floorHeight
+        if (grain.receiver && grain.y < grain.entryHeight && grain.y > restingHeight + grain.radius * 2) {
+          // Inside a vessel the wall and powder bed arrest horizontal travel.
+          Body.setVelocity(body, { x: body.velocity.x * 0.82, y: body.velocity.y })
+          grain.dz *= 0.82
+        }
         grain.dz *= grain.y < restingHeight + grain.radius * 2 ? 0.70 : 0.99
         const settled = grain.age > 0.18 && body.speed < 0.28
         if (!settled && grain.age < 1.5) continue

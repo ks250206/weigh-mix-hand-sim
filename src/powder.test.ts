@@ -43,7 +43,33 @@ test('a caught stream collides above the bench, then joins the vessel powder wit
     world.advance([pour], 1, 1 / 60)
     for (const grain of world.moving) low = Math.min(low, grain.y)
   }
-  assert.ok(low > 0.52 && low < 0.59)
+  assert.ok(low > 0.60 && low < 0.67, 'grains rest on the opened foil above the pan')
   assert.equal(world.moving.length, 0)
   assert.equal(world.residue.length, 0)
+})
+
+test('particle velocity follows the recorded pouring motion rather than seeking its receiver', () => {
+  for (const targetX of [0.25, 0.75]) {
+    const world = new PowderPhysics()
+    const transfer: PowderTransfer = {
+      ...event(1, 'mortar'), targetX,
+      trajectory: { height: 1.2, vx: 0.8, vz: -0.3, targetHeight: 0.36 },
+    }
+    world.advance([transfer], 1, 0)
+    assert.ok(world.moving.length > 0)
+    for (const grain of world.moving) {
+      assert.ok(Math.abs(grain.body.velocity.x - 0.8 * 100 / 60) < 1e-6)
+      assert.equal(grain.dz, -0.3)
+    }
+  }
+})
+
+test('a full particle budget does not erase grains that are already in flight', () => {
+  const world = new PowderPhysics()
+  const transfers = Array.from({ length: 20 }, (_, i) => event(i + 1))
+  world.advance(transfers, 20, 0)
+  const first = world.moving[0]
+  assert.equal(world.moving.length, MAX_MOVING_GRAINS)
+  world.advance([...transfers, event(21)], 21, 0)
+  assert.equal(world.moving[0], first)
 })
