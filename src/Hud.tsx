@@ -166,7 +166,7 @@ export default function Hud(props: HudProps) {
 
     <div className="console">
       <section className="live-strip" aria-label="実験中の重要な数値">
-        <div className={`live-time ${s.mode === 'standard' && s.remaining <= 60 ? 'urgent' : ''}`}><span>{s.mode === 'practice' ? '時間制限なし' : '残り時間'}</span><strong data-testid="time-readout">{s.mode === 'practice' ? '∞' : clock(s.remaining)}</strong><small>{statusLabel}</small></div>
+        <div className={`live-time ${s.mode === 'standard' && s.remaining <= 60 ? 'urgent' : ''}`}><span>{s.mode === 'practice' ? '制限なし' : '残り時間'}</span><strong data-testid="time-readout">{s.mode === 'practice' ? '∞' : clock(s.remaining)}</strong><small>{statusLabel}</small></div>
         <div className="live-mass"><span>{s.tared ? '天秤・正味' : '天秤・総量'}</span><strong data-testid="mass-readout">{s.scaleMass.toFixed(3)} <small>g</small></strong><small>{powder ? `${LABELS[bottles[powder]]} 目標 ${recipe[powder].toFixed(3)} g` : `回収 ${s.vialMass.toFixed(3)} g`}</small></div>
         <div className={`live-anger ${anger >= 75 ? 'angry' : anger >= 40 ? 'tense' : ''}`}><Professor anger={anger} won={s.status === 'won'} /><div><span>先生の怒り <strong data-testid="anger-readout">{anger}%</strong></span><meter aria-label="指導教員の怒り" min={0} max={100} value={anger} low={40} high={75} optimum={0} /><small>{s.professorFeedback || '落ち着いて、手元を見よう。'}</small></div></div>
       </section>

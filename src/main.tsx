@@ -7,6 +7,7 @@ import { createScene } from './scene'
 import { LabAudio } from './audio'
 import { foilIds } from './contract'
 import type { GameInput, GameState, Station } from './contract'
+import { sceneDistance, WORLD_DEPTH, WORLD_WIDTH } from './geometry'
 import { Controls, validBindings, type Control, type ControlSettings, type RoundSummary } from './input'
 import './style.css'
 
@@ -171,7 +172,13 @@ function App() {
           i.targetY = clamp(i.targetY + dy * speed * tick)
           Object.assign(i, controls.sample(k, settingsRef.current.bindings))
           const point = pendingGrip.current
-          if (point && Math.hypot(s.hand.x - point.x, s.hand.y - point.y) < 0.032) {
+          // A remote click reserves a controlled pickup or placement. Let the
+          // spring-driven hand settle before consuming that reservation, so a
+          // bottle is not launched as the hand first passes its destination.
+          // Immediate nearby clicks and F still preserve a deliberate moving release.
+          const settledAtClick = point && sceneDistance(s.hand, point) < 0.08
+            && Math.hypot(s.hand.vx * WORLD_WIDTH, s.hand.vy * WORLD_DEPTH) < 0.08
+          if (settledAtClick) {
             i.gripPressed = true
             pendingGrip.current = null
             setPending(null)

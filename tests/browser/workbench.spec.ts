@@ -78,8 +78,8 @@ test('critical measurements and controls stay visible on a touch screen', async 
   test.skip(info.project.name !== 'touch', 'touch layout only')
   await ready(page)
   await page.getByTestId('start-practice').tap()
-  for (const id of ['time-readout', 'anger-readout', 'mass-readout', 'action-control', 'grip-control']) {
-    await expect(page.getByTestId(id), id).toBeInViewport()
+  for (const id of ['time-readout', 'anger-readout', 'mass-readout', 'hygiene-readout', 'action-control', 'grip-control']) {
+    await expect(page.getByTestId(id), id).toBeInViewport({ ratio: 1 })
   }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
   expect(overflow, 'the mobile page must not scroll sideways').toBe(false)
