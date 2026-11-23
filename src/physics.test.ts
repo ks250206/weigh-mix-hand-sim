@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Container3D } from '@pixi/3d'
 import { startGame, stepGame } from './game.ts'
 import { HOME } from './contract.ts'
 import { TablePhysics } from './physics.ts'
+import { heldObjectHeight, pointOnFoil, pourMouth, receiverSpec, sceneDistance, vesselGeometry, vesselPose, WORLD_WIDTH, WORLD_DEPTH } from './geometry.ts'
 
 const dt = 1 / 120
 
@@ -60,7 +62,9 @@ test('the rails confine a thrown cap and the anchored balance protects foil dock
       assert.ok(cap.x >= 0.013 && cap.x <= 0.987)
       assert.ok(cap.y >= 0.025 && cap.y <= 0.975)
     }
-    assert.ok(edgeX > 0.48 && edgeY > 0.467, 'the moving cap contacts both rails')
+    assert.ok(edgeX > 0.5 - (vesselGeometry.cap.radius + 0.025) / WORLD_WIDTH &&
+      edgeY > 0.5 - (vesselGeometry.cap.radius + 0.025) / WORLD_DEPTH,
+      'the real-sized cap contacts both rails')
   }
 })
 
@@ -98,4 +102,95 @@ test('folding removes the unused corners from the physical collision footprint',
   assert.ok(cornerContact(1, 38, -38) < 0.01, 'first crease clears the folded half')
   assert.ok(cornerContact(1, -42, 40) > 1, 'first triangle retains its outer corner')
   assert.ok(cornerContact(2, -42, 40) < 0.01, 'four-layer packet has the smallest footprint')
+})
+
+test('bottle contact uses the rendered radius and a supported vessel stays fixed', () => {
+  const overlap = startGame()
+  Object.assign(overlap.objects.jarA, { x: 0.40, y: 0.29 })
+  Object.assign(overlap.objects.jarB, { x: 0.47, y: 0.29 })
+  const contact = new TablePhysics(overlap)
+  for (let i = 0; i < 30; i++) contact.step(overlap, overlap.hand, dt)
+  assert.ok(sceneDistance(overlap.objects.jarA, overlap.objects.jarB) > 0.965,
+    'visible bottle walls separate before they overlap')
+
+  function carry(supported: boolean) {
+    const s = startGame()
+    Object.assign(s.hand, { held: 'jarA', x: 0.31, y: 0.30 })
+    Object.assign(s.objects.jarA, { x: 0.31, y: 0.30 })
+    Object.assign(s.objects.jarB, { x: 0.54, y: 0.30 })
+    if (supported) s.supportTarget = 'jarB'
+    const table = new TablePhysics(s)
+    for (let i = 0; i < 120; i++) {
+      s.hand.x = 0.31 + i / 119 * 0.23
+      s.objects.jarA.x = s.hand.x
+      table.step(s, { x: 0.9, y: 0.3 }, dt)
+    }
+    return s.objects.jarB.x
+  }
+  assert.ok(carry(false) > 0.57, 'a carried bottle can push other tall equipment')
+  assert.ok(Math.abs(carry(true) - 0.54) < 1e-6, 'the explicit left-hand brace prevents movement')
+})
+
+test('placement preserves yaw and opened foil has the same selectable footprint as the sheet', () => {
+  const s = startGame(), table = new TablePhysics(s)
+  const at = { x: 0.45, y: 0.65, yaw: 0.63 }
+  table.lift('spatula')
+  table.release('spatula', at, { x: 0, y: 0 }, false)
+  table.step(s, { x: 0.8, y: 0.8 }, dt)
+  assert.ok(Math.abs(s.objects.spatula.yaw! - 0.63) < 1e-6)
+  const foil = s.objects.foil
+  foil.foldCount = 2
+  foil.folded = true
+  foil.unfolded = false
+  assert.equal(pointOnFoil(foil, -0.43, -0.43), false)
+  foil.unfolded = true
+  assert.equal(pointOnFoil(foil, -0.43, -0.43), true)
+})
+
+test('a tilted collection foil clears the vial rim and the pour edge changes with tilt direction', () => {
+  const s = startGame()
+  Object.assign(s.hand, { held: 'foil2', x: 0.7, y: 0.8, tilt: 1.15 })
+  Object.assign(s.objects.foil2, { x: 0.7, y: 0.8, tilt: 1.15, unfolded: true })
+  Object.assign(s.objects.vial, { x: 0.72, y: 0.8, open: true })
+  const height = heldObjectHeight(s)
+  const right = pourMouth('foil2', s.objects.foil2, height)
+  assert.ok(right.height > receiverSpec('vial', s.objects.vial)!.height + 0.15)
+  s.objects.foil2.tilt *= -1
+  const left = pourMouth('foil2', s.objects.foil2, height)
+  assert.ok(left.x < s.objects.foil2.x && right.x > s.objects.foil2.x)
+  assert.ok(Math.abs(left.height - right.height) < 1e-6)
+})
+
+test('a falling vessel stays on the bench and its rendered mouth matches the powder origin', () => {
+  for (const sign of [-1, 1]) for (const angle of [0.2, 0.8, 1.36]) {
+    const object = { ...startGame().objects.jarA, x: 0.5, y: 0.5, yaw: 0.7,
+      toppled: true, tilt: sign * 0.98, toppleAngle: sign * angle }
+    const pose = vesselPose('jarA', object)
+    const node = new Container3D()
+    node.origin.set(0, pose.originY, 0)
+    node.position.y = pose.offsetY
+    node.rotation.set(0, object.yaw, -pose.tilt)
+    const lowest = node.toGlobal({ x: sign * vesselGeometry.jarA.radius, y: 0, z: 0 })
+    assert.ok(Math.abs(lowest.y) < 1e-6, `lowest edge floated at ${lowest.y}`)
+    const rendered = node.toGlobal({ x: sign * vesselGeometry.jarA.mouth, y: 1.25, z: 0 })
+    const mouth = pourMouth('jarA', object, 0)
+    assert.ok(Math.abs(rendered.x - (mouth.x - 0.5) * WORLD_WIDTH) < 1e-6)
+    assert.ok(Math.abs(rendered.z - (mouth.y - 0.5) * WORLD_DEPTH) < 1e-6)
+    assert.ok(Math.abs(rendered.y - mouth.height) < 1e-6)
+  }
+
+  const s = startGame(), jar = s.objects.jarA
+  Object.assign(jar, { x: 0.45, y: 0.65, toppled: true, tilt: 0.98 })
+  const table = new TablePhysics(s)
+  for (let i = 0; i < 80; i++) table.step(s, s.hand, dt)
+  assert.ok(jar.toppleAngle! > 1.3)
+  Object.assign(jar, { toppled: false, tilt: 0, toppleAngle: 0 })
+  Object.assign(s.hand, { x: jar.x, y: jar.y, held: 'jarA' })
+  table.lift('jarA')
+  const neighbor = { x: jar.x + 1.14 / WORLD_WIDTH, y: jar.y }
+  Object.assign(s.objects.jarB, neighbor)
+  table.release('jarB', neighbor, { x: 0, y: 0 }, false)
+  for (let i = 0; i < 10; i++) table.step(s, { x: 0.9, y: 0.9 }, dt)
+  assert.ok(sceneDistance(s.objects.jarB, neighbor) < 0.001,
+    'immediate pickup must restore the upright footprint before carrying past a neighbor')
 })

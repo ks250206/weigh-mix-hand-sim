@@ -95,12 +95,21 @@ export function foilSheet(f: Forms, root: Container3D, accent: number) {
     );
     return { first, second };
   });
-  let previous = -1;
-  return (fold: number) => {
-    if (fold === previous) return;
+  const creases = [-Math.PI / 4, Math.PI / 4].map(angle => {
+    const line = f.box(sheet, f.ink(0x617b96, 0.58), 0, 0.046, 0, h * 2.65, 0.006, 0.012);
+    line.rotation.y = angle;
+    return line;
+  });
+  let previous = -1, previousOpen = -1;
+  return (fold: number, opened = 0) => {
+    if (fold === previous && opened === previousOpen) return;
     previous = fold;
-    const angle1 = Math.min(fold, 1) * Math.PI,
-      angle2 = Math.max(fold - 1, 0) * Math.PI;
+    previousOpen = opened;
+    // Unfold both creases into a shallow tray, retaining the visible diagonal folds.
+    // The powder sits on the opened sheet, never inside the closed four-layer packet.
+    const angle1 = Math.min(fold, 1) * Math.PI * (1 - opened) + 0.20 * opened,
+      angle2 = Math.max(fold - 1, 0) * Math.PI * (1 - opened) + 0.20 * opened;
+    creases.forEach(line => { line.visible = opened > 0.9; });
     sectors.forEach(({ first, second }, i) => {
       if (i === 0 || i === 1) {
         first.quaternion.setFromAxisAngle(firstAxis, angle1);

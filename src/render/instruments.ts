@@ -1,5 +1,6 @@
 import { Container3D, Geometry3D, Quaternion, Vector3, type Mesh3D } from '@pixi/3d'
-import { LABELS, isFoil, mass as powderMass, type ObjectId, type Powder, type TableObject } from '../contract'
+import { DRY_SECONDS, LABELS, isFoil, mass as powderMass, type ObjectId, type Powder, type TableObject, type GameState } from '../contract'
+import { jarPowderHeight, vesselGeometry } from '../geometry'
 import { Forms, group } from './forms'
 import { foilSheet } from './foil'
 import { toolGrip } from './toolGrip'
@@ -18,9 +19,17 @@ export interface Instrument {
   height: number
   grip?: ReturnType<typeof toolGrip>
   tip?: Container3D
-  update?: (obj: TableObject, mass: number, mixed: number, held: boolean, depth: number, lift: number) => void
+  update?: (obj: TableObject, mass: number, mixed: number, held: boolean, depth: number, lift: number, state: GameState, dt: number) => void
 }
 
+const blendColor = (from: number, to: number, amount: number) => {
+  let color = 0
+  for (const shift of [16, 8, 0]) {
+    const a = (from >> shift) & 255, b = (to >> shift) & 255
+    color |= Math.min(255, Math.round((a + (b - a) * amount) / 4) * 4) << shift
+  }
+  return color
+}
 function powder(f: Forms, p: Container3D, x: number, y: number, z: number, radius: number) {
   const holder = group(p)
   holder.position.set(x, y, z)
@@ -43,7 +52,7 @@ function powder(f: Forms, p: Container3D, x: number, y: number, z: number, radiu
       ),
     )
   }
-  return (obj: TableObject, mixed: number) => {
+  return (obj: TableObject, mixed: number, coverage?: number[]) => {
     const weight = powderMass(obj)
     holder.visible = weight > 0.00001
     if (!holder.visible) return
@@ -51,14 +60,22 @@ function powder(f: Forms, p: Container3D, x: number, y: number, z: number, radiu
     const accent = obj.c > obj.b ? powderColors.c : POWDER_B
     const amount = Math.min(1, 0.26 + Math.cbrt(weight) * 0.46)
     holder.scale.set(amount, 0.32 + amount * 0.68, amount)
-    lump.material = f.material(fraction > 0.96 ? accent : POWDER_A)
-    second.material = f.material(accent)
-    second.visible = fraction > 0.02 && fraction < 0.96
-    second.scale.x = radius * Math.sqrt(fraction) * (1 - 0.006 * mixed)
+    let homogeneous = 0
+    for (const shift of [16, 8, 0]) {
+      const channel = (obj.a * ((POWDER_A >> shift) & 255) + obj.b * ((POWDER_B >> shift) & 255) + obj.c * ((powderColors.c >> shift) & 255)) / weight
+      homogeneous |= Math.min(255, Math.round(channel / 4) * 4) << shift
+    }
+    const uniformity = Math.round(Math.min(1, Math.max(0, mixed / 100)) * 20) / 20
+    lump.material = f.material(blendColor(fraction > 0.96 ? accent : POWDER_A, homogeneous, uniformity))
+    second.material = f.material(blendColor(accent, homogeneous, uniformity))
+    second.visible = fraction > 0.02 && fraction < 0.96 && uniformity < 0.96
+    second.scale.x = radius * Math.sqrt(fraction) * (1 - 0.7 * uniformity)
     granules.forEach((grain, i) => {
-      grain.material = f.material(
-        i / 9 < obj.c / weight ? powderColors.c : i / 9 < fraction ? POWDER_B : POWDER_A,
-      )
+      const original = i / 9 < obj.c / weight ? powderColors.c : i / 9 < fraction ? POWDER_B : POWDER_A
+      const sector = (Math.floor(((i * 2.4) % (2 * Math.PI)) / (Math.PI / 4)) + 4) % 8
+      const local = coverage ? Math.min(1, coverage[sector] ?? 0) : uniformity
+      grain.material = f.material(blendColor(original, homogeneous, Math.max(uniformity * 0.4, local)))
+      grain.scale.y = 0.033 * (1 - uniformity * 0.4)
     })
   }
 }
@@ -128,11 +145,12 @@ function jar(f: Forms, root: Container3D, p: Powder): Instrument {
       [0.35, 1.21],
       [0.35, 1.25],
       [0.29, 1.25],
-      [0.29, 1.1],
+      [0.29, 0.18],
+      [0, 0.18],
     ]),
     glass,
   )
-  f.disc(root, 0x2a3341, 0, 1.078, 0, 0.3, 0.035)
+  f.disc(root, 0x2a3341, 0, 0.165, 0, 0.29, 0.025)
   const contents = f.disc(root, powderColors[p], 0, 1.107, 0, 0.282, 0.021)
   f.mesh(
     root,
@@ -147,6 +165,8 @@ function jar(f: Forms, root: Container3D, p: Powder): Instrument {
     0,
   )
   const lid = group(root)
+  let lidOpened = false
+  const parkedLid = new Vector3()
   f.mesh(
     lid,
     f.profile([
@@ -170,9 +190,20 @@ function jar(f: Forms, root: Container3D, p: Powder): Instrument {
     radius: 0.51,
     height: 1.45,
     update(obj) {
-      lid.position.set(obj.open ? 0.67 : 0, obj.open ? 0.02 : 1.185, obj.open ? -0.12 : 0)
-      lid.rotation.z = obj.open ? -0.15 : 0
+      if (obj.open && !lidOpened) {
+        // A removed lid stays on the bench when its bottle is carried away.
+        root.toGlobal({ x: 0.68, y: 0.02, z: -0.12 }, parkedLid)
+        root.parent!.addChild(lid)
+        lid.position.copyFrom(parkedLid)
+        lid.rotation.set(0, 0, -0.10)
+      } else if (!obj.open) {
+        if (lid.parent !== root) root.addChild(lid)
+        lid.position.set(0, 1.185, 0)
+        lid.rotation.set(0, 0, 0)
+      }
+      lidOpened = obj.open
       contents.visible = powderMass(obj) > 0.00001
+      contents.position.y = jarPowderHeight(obj)
     },
   }
 }
@@ -180,26 +211,66 @@ function jar(f: Forms, root: Container3D, p: Powder): Instrument {
 export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrument {
   const root = group(parent)
   if (id === 'work') return { root, radius: 0.47, height: 0 }
+  if (id === 'cleaner') {
+    f.box(root, 0x8ba3bf, 0, 0.045, 0, 1.42, 0.09, 1.0)
+    f.box(root, 0xe3eaf1, 0, 0.099, 0, 1.33, 0.018, 0.91)
+    const bottle = group(root)
+    bottle.position.set(-0.44, 0.10, -0.10)
+    f.mesh(bottle, f.profile([[0, 0], [0.16, 0], [0.19, 0.06], [0.19, 0.48], [0.09, 0.56], [0.08, 0.67], [0, 0.67]]), f.ink(0xb5e8f4, 0.68))
+    f.disc(bottle, 0x286b9f, 0, 0.67, 0, 0.085, 0.11)
+    f.box(bottle, 0x286b9f, 0.075, 0.75, 0, 0.23, 0.035, 0.07)
+    const label = f.decal(220, 150, c => {
+      c.fillStyle = '#f7fbff'; c.fillRect(0, 0, 220, 150)
+      c.fillStyle = '#204e80'; c.textAlign = 'center'; c.font = 'bold 45px sans-serif'; c.fillText('EtOH', 110, 65)
+      c.font = 'bold 24px sans-serif'; c.fillText('無水', 110, 110)
+    })
+    f.panel(bottle, label, 0, 0.29, 0.192, 0.31, 0.25)
+    // Fresh wipes, a working wipe and a closed bin have distinct positions and colours.
+    for (let i = 0; i < 3; i++) f.box(root, i % 2 ? 0xecf3f8 : 0xffffff, 0.36, 0.14 + i * 0.027, -0.25, 0.40, 0.024, 0.25)
+    const cloth = group(root)
+    cloth.position.set(0.05, 0.13, 0.17)
+    const wipe = f.box(cloth, 0xf9fbf5, 0, 0, 0, 0.46, 0.026, 0.34)
+    f.box(root, 0x53708d, 0.53, 0.24, 0.24, 0.26, 0.27, 0.30)
+    f.box(root, 0x263f5c, 0.53, 0.386, 0.24, 0.28, 0.025, 0.32)
+    const used = Array.from({ length: 6 }, (_, i) => f.oval(root, 0xcac9ad, 0.48 + (i % 2) * 0.08, 0.41 + Math.floor(i / 2) * 0.027, 0.21 + (i % 3) * 0.024, 0.059, 0.025, 0.055))
+    const lamp = f.disc(root, 0x53bfa0, -0.06, 0.13, -0.34, 0.075, 0.035)
+    const drying = f.box(root, 0x2796d1, -0.04, 0.125, 0.39, 0.66, 0.016, 0.033)
+    return {
+      root, radius: 0.71, height: 0.9,
+      update(_obj, _mass, _mixed, _held, _depth, _lift, state) {
+        const hygiene = state.toolHygiene
+        const washing = hygiene.wipeProgress > 0 && hygiene.wipeProgress < 1
+        const pulse = Math.sin(state.elapsed * 26)
+        cloth.position.x = 0.05 + (washing ? 0.13 * pulse : 0)
+        cloth.rotation.y = washing ? pulse * 0.12 : 0
+        wipe.material = f.material(hygiene.state === 'wet' || washing ? 0xc5e9ee : 0xf9fbf5)
+        lamp.material = f.material(hygiene.state === 'clean' ? 0x42b58e : hygiene.state === 'wet' ? 0x329bd0 : 0xd79438)
+        drying.visible = hygiene.state === 'wet'
+        drying.scale.x = 0.66 * Math.max(0.02, Math.min(1, hygiene.dryRemaining / DRY_SECONDS))
+        used.forEach((mesh, i) => { mesh.visible = i < hygiene.wipesUsed; })
+      },
+    }
+  }
   if (id === 'jarA' || id === 'jarB' || id === 'jarC')
     return jar(f, root, id === 'jarA' ? 'a' : id === 'jarB' ? 'b' : 'c')
   if (isFoil(id)) {
     const accents = { foil: 0xa94926, foilB: 0x234e9f, foilC: 0xb18a2d, foil2: 0x526877 }
     const paper = group(root)
     const fold = foilSheet(f, paper, accents[id])
-    const dust = powder(f, paper, -0.32, 0.15, 0, 0.22)
-    let finishedAt = 0
+    const dust = powder(f, paper, 0, 0.115, 0, 0.30)
+    let centered = 0, opened = 0
     return {
       root,
       radius: 0.64,
       height: 0.15,
-      update(obj, _mass, mixed) {
-        fold(obj.foldCount + obj.foldProgress)
+      update(obj, _mass, mixed, _held, _depth, _lift, _state, dt) {
+        const blend = 1 - Math.exp(-dt * 14)
+        opened += (Number(obj.unfolded) - opened) * blend
+        centered += (Number(obj.folded && !obj.unfolded) - centered) * blend
+        fold(obj.foldCount + obj.foldProgress, opened)
         // Once the last crease is pressed, align the packet's centroid with the
         // pickup point and pan center. The guides stay fixed during both strokes.
-        const now = performance.now()
-        if (!obj.folded) finishedAt = 0
-        else if (!finishedAt) finishedAt = now
-        paper.position.x = finishedAt ? 0.32 * Math.min(1, (now - finishedAt) / 220) : 0
+        paper.position.x = 0.32 * centered
         dust(obj, mixed)
       },
     }
@@ -254,8 +325,8 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
       root,
       radius: 0.8,
       height: 1.59,
-      update(obj, mass) {
-        opening += (Number(obj.open) - opening) * 0.16
+      update(obj, mass, _mixed, _held, _depth, _lift, _state, dt) {
+        opening += (Number(obj.open) - opening) * (1 - Math.exp(-dt * 12))
         sash.position.set(0, 0.97 + opening * 0.93, 0.456)
         const value = mass.toFixed(3) + ' g'
         if (value === previous || !ctx) return
@@ -297,10 +368,10 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
     const dust = powder(f, root, 0, 0.345, 0, 0.45)
     return {
       root,
-      radius: 0.72,
+      radius: vesselGeometry.mortar.radius,
       height: 0.75,
-      update(obj, _mass, mixed) {
-        dust(obj, mixed)
+      update(obj, _mass, mixed, _held, _depth, _lift, state) {
+        dust(obj, mixed, state.mixCoverage)
       },
     }
   }
@@ -366,15 +437,19 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
     )
     f.oval(tool, f.material(0xb1bfcd, 0.72), 0, 1.16, 0, 0.114, 0.215, 0.045)
     const dust = powder(f, tool, 0, 1.15, -0.047, 0.1)
+    const stain = f.oval(tool, 0xc7b25e, 0, 1.20, -0.049, 0.066, 0.105, 0.008)
+    const wetFilm = f.oval(tool, f.ink(0xa7e5f1, 0.45), 0, 1.16, -0.053, 0.095, 0.18, 0.009)
     return {
       root,
       grip,
       tip,
       radius: 0.56,
       height: 0.16,
-      update(obj, _mass, mixed, held, depth, lift) {
+      update(obj, _mass, mixed, held, depth, lift, state) {
         pose(held, depth, lift)
         dust(obj, mixed)
+        stain.visible = state.toolHygiene.state === 'dirty' && powderMass(obj) < 0.002
+        wetFilm.visible = state.toolHygiene.state === 'wet'
       },
     }
   }
@@ -402,7 +477,7 @@ export function instrument(f: Forms, parent: Container3D, id: ObjectId): Instrum
     const closed = f.disc(root, CHARCOAL, 0, 0.755, 0, 0.236, 0.16)
     return {
       root,
-      radius: 0.28,
+      radius: vesselGeometry.vial.radius,
       height: 0.8,
       update(obj, _mass, mixed) {
         dust(obj, mixed)

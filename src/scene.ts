@@ -1,10 +1,13 @@
 // Register the 3D renderer pipes before Pixi initializes the WebGL backend.
+import '@pixi/3d/webgl'
 import { AmbientLight, DirectionalLight, Plane, SphereGeometry, Vector3, View3D, type Mesh3D } from '@pixi/3d'
 import { Application } from 'pixi.js'
 import { FxaaEffect } from '@pixi/3d/extras'
 import { defaultGraphics, type GraphicsSettings } from './graphics'
+import { createGame } from './game'
+import { heldObjectHeight, jarPowderHeight, pointOnFoil, pourMouth, sceneDistance, vesselGeometry, vesselPose } from './geometry'
 import { PowderPhysics } from './powder'
-import { foldingFoil, foldStroke, foilIds, foilHalfSide, HOME, inWork, isFoil, isTool, toolHandle, isWeighFoil, LABELS, weighFoils, type GameState, type ObjectId, type Station } from './contract'
+import { foldStroke, foilIds, HOME, inWork, isFoil, isTool, toolHandle, isWeighFoil, LABELS, mass, weighFoils, type GameState, type ObjectId, type Station } from './contract'
 import { ANCHOR_HEIGHT, chamber, TABLE_DEPTH, TABLE_WIDTH, worldX, worldZ } from './render/chamber'
 import { Forms } from './render/forms'
 import { sheetHeight } from './render/foil'
@@ -15,8 +18,10 @@ import { instrument, powderColors } from './render/instruments'
 const ids = Object.keys(HOME) as ObjectId[]
 const limit = (v: number) => Math.max(0, Math.min(1, v))
 function activeFold(s: GameState) {
-  const id = foldingFoil(s.stage)
-  if (s.status !== 'playing' || !id || s.target !== id || s.hand.held || s.objects[id].folded || !inWork(s.objects[id])) return null
+  if (s.status !== 'playing' || s.hand.held) return null
+  const context = s.interactionTarget
+  const id = context && isFoil(context) ? context : s.target && isFoil(s.target) ? s.target : null
+  if (!id || s.objects[id].folded || !inWork(s.objects[id])) return null
   return s.objects[id]
 }
 const styles = `
@@ -39,15 +44,21 @@ const styles = `
 .gb-loupe span {position:absolute;bottom:3px;left:4px;color:#fff;background:#1b3054de;border-radius:2px;padding:1px 4px;font:600 10px/1.4 monospace}
 .gb-cursor {position:absolute;top:0;left:0;width:15px;height:15px;margin:-7.5px;border:1.5px solid #ffffff;border-radius:50%;box-shadow:0 0 0 1px #233957e6;pointer-events:none;z-index:2}
 .gb-cursor::after {content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;background:#173eab;border:1px solid #ffffff;box-sizing:content-box;border-radius:50%;transform:translate(-50%,-50%)}
+.gb-aim {position:absolute;width:17px;height:17px;margin:-8.5px;border:1px dashed #294b78;border-radius:50%;pointer-events:none;z-index:2;opacity:.7}
+.gb-assist {position:absolute;top:7px;left:9px;padding:3px 6px;background:#f1f7ffe8;border:1px solid #b7c8df;border-radius:3px;color:#25466e;font:600 10px/1.4 sans-serif;pointer-events:none;z-index:2}
 `
 export async function createScene(host: HTMLElement, initialGraphics = defaultGraphics()): Promise<{
   setGraphics(settings: GraphicsSettings): void
   draw(state: GameState): void
   pick(clientX: number, clientY: number): Station
   setLoupe(enabled: boolean): void
+  setPaused(paused: boolean): void
   destroy(): void
 }> {
   let graphics = initialGraphics
+  let paused = false, loupeEnabled = false
+  const renderResolution = () => loupeEnabled ? Math.max(1.5, graphics.resolution) : graphics.resolution
+  host.dataset.renderStatus = 'checking'
   const app = new Application()
   await app.init({
     preference: 'webgl',
@@ -63,7 +74,8 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   const view = new View3D({
     width: 1,
     height: 1,
-    composite: true,
+    // Keep the basic WebGL path direct. FXAA opts into an off-screen target when used.
+    composite: false,
     environment: null,
     toneMapping: 'none',
     cull: 'cpu',
@@ -99,6 +111,11 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   skin.className = 'gb-window'
   style.textContent = styles
   cursor.className = 'gb-cursor'
+  const aimMarker = document.createElement('span'), assistLabel = document.createElement('span')
+  aimMarker.className = 'gb-aim'
+  aimMarker.setAttribute('aria-hidden', 'true')
+  assistLabel.className = 'gb-assist'
+  assistLabel.hidden = true
   const guide = document.createElement('div'), crease = document.createElement('i')
   guide.className = 'gb-fold-guide'
   guide.hidden = true
@@ -111,12 +128,12 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   guide.append(crease, ...foldPoints)
   const loupe = document.createElement('div'), detail = document.createElement('canvas')
   const scaleLabel = document.createElement('span')
-  scaleLabel.textContent = '2.5×'
+  scaleLabel.textContent = '2.5× · 手元'
   loupe.className = 'gb-loupe'
   loupe.setAttribute('aria-label', '手元の拡大表示')
   loupe.hidden = true
   loupe.append(detail, scaleLabel)
-  skin.append(style, cursor, guide, loupe)
+  skin.append(style, cursor, aimMarker, assistLabel, guide, loupe)
   let detailContext: CanvasRenderingContext2D | null = null
   let loupeLeft = false, loupeWidth = 0, loupeHeight = 0
   const position = host.style.position
@@ -137,13 +154,15 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     return { id, model, marker, caption, shadow, ax: 0, ay: 0, offset: 0, tagWidth: 0, tagHeight: 0 }
   })
   const goal = f.mesh(root, f.ring, f.ink(0x174edb), 0, 0.034, 0, 1)
+  const working = f.mesh(root, f.ring, f.ink(0x1b9f86), 0, 0.039, 0, 1)
+  const mouthDot = f.oval(root, f.ink(0x24afc9), 0, 0, 0, 0.032, 0.032, 0.032)
   const powderWorld = new PowderPhysics()
   f.setShadows(graphics.shadows)
   powderWorld.setDetail(graphics.particles)
   const grainShape = f.geometry(new SphereGeometry({ radius: 1, widthSegments: 7, heightSegments: 5 }))
   const grainMeshes: Mesh3D[] = []
   let previousRound: GameState | undefined
-  let previousRemaining = 0
+  let previousElapsed = 0
   const plane = new Plane(new Vector3(0, 1, 0), -ANCHOR_HEIGHT)
   const handlePlane = new Plane(new Vector3(0, 1, 0), -0.15)
   const sheetPlane = new Plane(new Vector3(0, 1, 0), -sheetHeight)
@@ -155,22 +174,24 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     height = 1,
     last: GameState | undefined
   let hovering: ObjectId | null = null
+  let pointerAim: Station | null = null, pointerMovedAt = 0
   const resize = () => {
     width = Math.max(1, host.clientWidth)
     height = Math.max(1, host.clientHeight)
     loupeWidth = Math.round(Math.min(320, width * 0.43))
     loupeHeight = Math.round(Math.min(248, height * 0.39))
-    app.renderer.resize(width, height, graphics.resolution)
+    app.renderer.resize(width, height, renderResolution())
+    view.resolution = renderResolution()
     view.width = width
     view.height = height
     view.camera.mode = 'perspective'
     view.camera.near = 0.1
     view.camera.far = 90
-    view.camera.position.set(0, 12.5, 15.7)
-    view.camera.lookAt({ x: 0, y: 0.49, z: 0 })
-    const halfH = Math.max(3.55, (6.75 * height) / width)
-    view.camera.fov = (2 * Math.atan(halfH / 19.7) * 180) / Math.PI
-    skin.style.setProperty('--label-size', width < 480 ? '9px' : width < 850 ? '10px' : '12px')
+    view.camera.position.set(0, 10.8, 15.4)
+    view.camera.lookAt({ x: 0, y: 0.46, z: 0.08 })
+    const halfH = Math.max(3.48, (6.9 * height) / width)
+    view.camera.fov = (2 * Math.atan(halfH / 18.5) * 180) / Math.PI
+    skin.style.setProperty('--label-size', width < 850 ? '11px' : '12px')
     for (const entry of models) {
       entry.caption.style.padding = width < 500 ? '1px 3px' : '2px 5px'
       const wasHidden = entry.marker.hidden
@@ -219,8 +240,8 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       for (const id of ['jarA', 'jarB', 'jarC'] as const) {
         const jar = last.objects[id]
         if (last.hand.held === id || jar.toppled) continue
-        const surface = view.screenToWorld(pixel, jar.open ? powderSurface : jarLid, point)
-        if (surface && Math.hypot(surface.x - worldX(jar.x), surface.z - worldZ(jar.y)) < 0.46) {
+        const surface = view.screenToWorld(pixel, jar.open ? new Plane(new Vector3(0, 1, 0), -jarPowderHeight(jar)) : jarLid, point)
+        if (surface && Math.hypot(surface.x - worldX(jar.x), surface.z - worldZ(jar.y)) < vesselGeometry[id].radius) {
           if (jar.open && last.hand.held === 'spatula')
             return { x: surface.x / TABLE_WIDTH + 0.5, y: surface.z / TABLE_DEPTH + 0.5 }
           return { x: jar.x, y: jar.y }
@@ -234,11 +255,9 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       if (!last.hand.held) {
         const surface = view.screenToWorld(pixel, sheetPlane, point)
         if (surface) for (const id of foilIds) {
-          const foil = last.objects[id], angle = foil.yaw ?? 0
+          const foil = last.objects[id]
           const dx = surface.x - worldX(foil.x), dz = surface.z - worldZ(foil.y)
-          const localX = dx * Math.cos(angle) - dz * Math.sin(angle)
-          const localZ = dz * Math.cos(angle) + dx * Math.sin(angle)
-          if (Math.max(Math.abs(localX), Math.abs(localZ)) <= foilHalfSide) return { x: foil.x, y: foil.y }
+          if (pointOnFoil(foil, dx, dz)) return { x: foil.x, y: foil.y }
         }
       }
     }
@@ -250,11 +269,13 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   function pointer(e: PointerEvent) {
     if (!last) return
     const p = pick(e.clientX, e.clientY)
-    let best = 0.106
+    pointerAim = p
+    pointerMovedAt = performance.now()
+    let best = 0.62
     hovering = null
     for (const id of ids) {
       const o = isTool(id) && last.hand.held !== id ? toolHandle(id, last.objects[id]) : last.objects[id],
-        d = Math.hypot(o.x - p.x, o.y - p.y)
+        d = sceneDistance(o, p)
       if (d < best) {
         best = d
         hovering = id
@@ -337,14 +358,17 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
   let previousDraw = 0
   function draw(s: GameState) {
     last = s
-    const t = performance.now() / 1000
+    const clock = performance.now() / 1000
+    const dt = previousDraw ? Math.min(0.12, Math.max(0, clock - previousDraw)) : 1 / 60
+    previousDraw = clock
+    const t = s.elapsed ?? 0
     if (graphics.showFps) {
-      if (!fpsStart) fpsStart = t
+      if (!fpsStart) fpsStart = clock
       frames++
-      if (t - fpsStart >= 0.5) {
-        fpsLabel.textContent = Math.round(frames / (t - fpsStart)) + ' FPS'
+      if (clock - fpsStart >= 0.5) {
+        fpsLabel.textContent = Math.round(frames / (clock - fpsStart)) + ' FPS'
         frames = 0
-        fpsStart = t
+        fpsStart = clock
       }
     }
     const goalId = s.status === 'playing' ? s.target : null
@@ -353,23 +377,12 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     const hx = worldX(s.hand.x),
       hz = worldZ(s.hand.y)
     const yaw = Math.atan2(3.76 - hx, Math.max(0.5, 3.76 - hz)) * 0.76
-    let utensilHeight = 0.64
-    if (held === 'spatula') {
-      for (const id of ['jarA', 'jarB', 'jarC'] as const) {
-        const jar = s.objects[id]
-        const reach = limit(1 - (Math.hypot(s.hand.x - jar.x, s.hand.y - jar.y) - 0.045) / 0.12)
-        utensilHeight = Math.max(utensilHeight, 0.64 + reach * (0.78 - 0.31 * s.scoopDepth))
-      }
-      const reach = limit(1 - Math.hypot(s.hand.x - s.objects.scale.x, s.hand.y - s.objects.scale.y) / 0.14)
-      utensilHeight = Math.max(utensilHeight, 0.64 + 0.32 * reach)
-    }
+    const utensilHeight = heldObjectHeight(s)
     let grind = 0
     if (held === 'pestle') {
       const bowl = s.objects.mortar
       const r = Math.hypot(hx - worldX(bowl.x), hz - worldZ(bowl.y))
-      grind = bowl.toppled ? 0 : limit((0.73 - r) / 0.20)
-      // Trace the ceramic floor while lifting the working end over the lip.
-      utensilHeight = 0.81 * (1 - grind) + (0.32 + 0.85 * r * r) * grind
+      grind = bowl.toppled ? 0 : limit((0.64 - r) / 0.18)
     }
     let toolWrist: WristPose | undefined
     let toolTip: { x: number; y: number; z: number } | undefined
@@ -389,22 +402,31 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       const linear = pickup?.progress ?? 1
       const lift = linear * linear * (3 - 2 * linear)
       const y = heldTool ? utensilHeight * lift + 0.14 * Math.sin(lift * Math.PI)
-        : id === held ? 0.5 : dockedFoil ? 0.515 : 0
+        : id === held ? utensilHeight : dockedFoil ? 0.515 : 0
       const px = pickup ? (1 - lift) * worldX(pickup.x) + lift * x : x
       const pz = pickup ? (1 - lift) * worldZ(pickup.y) + lift * z : z
       model.root.visible = !sealedCap
-      model.root.position.set(px, y + (o.toppled ? model.radius * 0.75 : 0), pz)
-      model.root.rotation.z = o.toppled ? -Math.sign(o.tilt || 1) * 1.36 : -o.tilt
-      const initialYaw = pickup?.yaw ?? yaw
-      const turn = Math.atan2(Math.sin(yaw - initialYaw), Math.cos(yaw - initialYaw))
-      model.root.rotation.y = heldTool ? initialYaw + lift * turn : (o.yaw ?? 0)
-      model.update?.(o, s.scaleMass, s.mixed, id === held, id === 'pestle' ? grind : s.scoopDepth, lift)
+      const pose = vesselPose(id, o)
+      model.root.origin.set(0, pose.originY, 0)
+      model.root.position.set(px, y + pose.offsetY, pz)
+      model.root.rotation.z = -pose.tilt
+      const objectYaw = o.yaw ?? 0, initialYaw = pickup?.yaw ?? objectYaw
+      const turn = Math.atan2(Math.sin(objectYaw - initialYaw), Math.cos(objectYaw - initialYaw))
+      model.root.rotation.y = heldTool ? initialYaw + lift * turn : objectYaw
+      model.update?.(o, s.scaleMass, s.mixed, id === held, id === 'pestle' ? grind : s.scoopDepth, lift, s, dt)
       if (heldTool) {
         toolWrist = model.grip?.wrist()
         toolTip = model.tip?.toGlobal({ x: 0, y: 0, z: 0 })
       }
-      shadow.position.set(x + 0.09, 0.013, z + 0.065)
-      shadow.visible = !heldTool && !dockedFoil && !sealedCap && id !== 'work'
+      shadow.position.set(x + 0.06 + y * 0.12, 0.013, z + 0.045 + y * 0.06)
+      shadow.scale.x = model.radius * 2.7 * (1 + y * 0.22)
+      shadow.scale.y = model.radius * 2.22 * (1 + y * 0.22)
+      shadow.visible = !dockedFoil && !sealedCap && id !== 'work'
+      if (isFoil(id)) {
+        marker.dataset.foldCount = String(o.foldCount)
+        marker.dataset.unfolded = String(Boolean(o.unfolded))
+      }
+      marker.dataset.toppled = String(o.toppled)
       const handle = isTool(id) && !heldTool ? toolHandle(id, o) : undefined
       const anchor = handle ? project(worldX(handle.x), 0.15, worldZ(handle.y))
         : project(x, isFoil(id) ? y + sheetHeight : ANCHOR_HEIGHT, z)
@@ -418,7 +440,10 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
         const top = width < 500 && rearInstrument ? project(x, y + model.height, z - 0.25) : null
         entry.offset = top ? top.y - anchor.y - entry.tagHeight - 2 : tag.y - anchor.y + 2
       }
-      marker.hidden =
+      const titleLabel = s.status === 'title' && (width >= 500 ||
+        id === 'scale' || id === 'foil' || id === 'cleaner' || id === 'jarA' || id === 'jarB' || id === 'jarC')
+      const relevant = titleLabel || id === goalId || id === s.interactionTarget || id === hovering || id === held || id === s.supportTarget
+      marker.hidden = !relevant ||
         heldTool || sealedCap ||
         (id === 'work' && goalId !== 'work') ||
         (id === 'scale' && goalId !== 'scale' && Object.values(weighFoils).some((foil) =>
@@ -426,17 +451,24 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       marker.toggleAttribute('data-held', id === held)
       marker.toggleAttribute('data-goal', id === goalId)
       marker.toggleAttribute('data-focus', id === hovering || id === held)
+      marker.toggleAttribute('data-supported', id === s.supportTarget)
       if (id === goalId) {
         goal.position.set(handle ? worldX(handle.x) : x, 0.036, handle ? worldZ(handle.y) : z)
         const r = model.radius * (1.25 + 0.035 * Math.sin(t * 4))
         goal.scale.set(r, 0.45, r)
       }
+      if (id === s.interactionTarget) {
+        working.position.set(x, 0.040, z)
+        working.scale.set(model.radius * 1.12, 0.35, model.radius * 1.12)
+      }
     }
     const sheet = activeFold(s)
     guide.hidden = !sheet
+    let guidePoints: { x: number; y: number }[] = []
     if (sheet) {
       const [a, b] = foldStroke(sheet).map(p => project(worldX(p.x), sheetHeight, worldZ(p.y)))
       if (a && b) {
+        guidePoints = [a, b]
         const at = (p: { x: number; y: number }) => 'translate(' + p.x.toFixed(2) + 'px,' + p.y.toFixed(2) + 'px)'
         foldPoints[0].style.transform = at(a)
         foldPoints[1].style.transform = at(b)
@@ -446,6 +478,12 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     }
     layoutCaptions()
     goal.visible = goalId !== null
+    working.visible = s.status === 'playing' && s.interactionTarget !== null && s.interactionTarget !== goalId && s.actionReady
+    mouthDot.visible = Boolean(held && mass(s.objects[held]) > 0.00001)
+    if (held && mouthDot.visible) {
+      const mouth = pourMouth(held, s.objects[held], utensilHeight)
+      mouthDot.position.set(worldX(mouth.x), mouth.height, worldZ(mouth.y))
+    }
     const title = s.status === 'title'
     const idle = title ? 0.1 : 0
     const tracing = sheet && Math.hypot(hx - worldX(sheet.x), hz - worldZ(sheet.y)) < 1.04
@@ -456,25 +494,16 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       s.hand.tilt,
       held ? 0.78 : 0,
       t,
-      tracing ? 0.11 : ANCHOR_HEIGHT,
+      tracing ? 0.11 : held && !isTool(held)
+        ? utensilHeight + (held in vesselGeometry ? vesselGeometry[held as keyof typeof vesselGeometry].height * 0.45 : 0.10)
+        : ANCHOR_HEIGHT,
       toolWrist,
     )
-    // The free glove braces the vessel while the tool hand scoops or grinds.
-    const receiving =
-      held === 'pestle' ? (['mortar'] as const) : held === 'spatula' ? (['jarA', 'jarB', 'jarC'] as const) : []
-    let brace: Station | undefined
-    for (const id of receiving) {
-      const vessel = s.objects[id]
-      if (
-        !vessel.toppled &&
-        (id === 'mortar' || vessel.open) &&
-        Math.hypot(s.hand.x - vessel.x, s.hand.y - vessel.y) < 0.1
-      )
-        brace = vessel
-    }
-    const blend = 1 - Math.exp(-Math.min(0.1, t - previousDraw) * 7)
-    previousDraw = t
-    support.x += ((brace ? worldX(brace.x) - 0.48 : -3.1 + Math.sin(t * 0.91) * 0.06) - support.x) * blend
+    // The left hand follows an explicit support action, not an automatic animation.
+    const brace = s.supportTarget ? s.objects[s.supportTarget] : undefined
+    const blend = 1 - Math.exp(-dt * 9)
+    const braceRadius = s.supportTarget && s.supportTarget in vesselGeometry ? vesselGeometry[s.supportTarget as keyof typeof vesselGeometry].radius : 0.48
+    support.x += ((brace ? worldX(brace.x) - braceRadius : -3.3 + Math.sin(t * 0.91) * 0.04) - support.x) * blend
     support.z +=
       ((brace ? worldZ(brace.y) + 0.1 : 2.35 + Math.sin(t * 1.13) * (0.035 + idle)) - support.z) * blend
     support.height += ((brace ? (held === 'pestle' ? 0.44 : 0.61) : ANCHOR_HEIGHT) - support.height) * blend
@@ -483,14 +512,20 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     cursor.hidden = s.status !== 'playing'
     if (target)
       cursor.style.transform = 'translate(' + target.x.toFixed(2) + 'px,' + target.y.toFixed(2) + 'px)'
+    const pointerTarget = pointerAim && project(worldX(pointerAim.x), tracing ? sheetHeight : ANCHOR_HEIGHT, worldZ(pointerAim.y))
+    aimMarker.hidden = s.status !== 'playing' || !pointerTarget || !pointerAim ||
+      performance.now() - pointerMovedAt > 1600 || sceneDistance(pointerAim, s.hand) < 0.10
+    if (pointerTarget) aimMarker.style.transform = `translate(${pointerTarget.x.toFixed(2)}px,${pointerTarget.y.toFixed(2)}px)`
+    assistLabel.hidden = s.status !== 'playing' || (!held && !brace)
+    assistLabel.textContent = (held ? '高さは自動調整' : '') + (brace ? `${held ? ' · ' : ''}左手で${LABELS[s.supportTarget!]}を固定` : '')
     pilot.scale.y = 0.07 + 0.009 * Math.sin(t * 2.5)
     if (previousRound !== s) {
       powderWorld.reset()
       previousRound = s
-      previousRemaining = s.remaining
+      previousElapsed = s.elapsed
     }
-    powderWorld.advance(s.powderTransfers, s.transferSeq, previousRemaining - s.remaining)
-    previousRemaining = s.remaining
+    powderWorld.advance(s.powderTransfers, s.transferSeq, paused ? 0 : Math.max(0, s.elapsed - previousElapsed))
+    previousElapsed = s.elapsed
     const moving = powderWorld.moving, settled = powderWorld.residue
     const count = moving.length + settled.length
     for (let i = 0; i < Math.max(count, grainMeshes.length); i++) {
@@ -530,7 +565,85 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       const sy = Math.max(0, Math.min(height - cropHeight, centerY - cropHeight / 2))
       const rx = app.canvas.width / width, ry = app.canvas.height / height
       detailContext.drawImage(app.canvas, sx * rx, sy * ry, cropWidth * rx, cropHeight * ry, 0, 0, w, h)
+      // The guide and real working point are DOM overlays in the main view. Draw
+      // them again as vectors in the loupe so magnification is useful for folding.
+      const dx = (x: number) => (x - sx) * w / cropWidth
+      const dy = (y: number) => (y - sy) * h / cropHeight
+      detailContext.save()
+      if (guidePoints.length === 2) {
+        detailContext.lineWidth = 2.2 * density
+        detailContext.setLineDash([5 * density, 4 * density])
+        detailContext.strokeStyle = '#16649b'
+        detailContext.beginPath()
+        detailContext.moveTo(dx(guidePoints[0].x), dy(guidePoints[0].y))
+        detailContext.lineTo(dx(guidePoints[1].x), dy(guidePoints[1].y))
+        detailContext.stroke()
+        detailContext.setLineDash([])
+        for (const point of guidePoints) {
+          detailContext.fillStyle = '#e8fcff'
+          detailContext.beginPath()
+          detailContext.arc(dx(point.x), dy(point.y), 5 * density, 0, Math.PI * 2)
+          detailContext.fill()
+          detailContext.stroke()
+        }
+      }
+      detailContext.lineWidth = 2 * density
+      detailContext.strokeStyle = '#ffffff'
+      detailContext.beginPath()
+      detailContext.arc(dx(target.x), dy(target.y), 7 * density, 0, Math.PI * 2)
+      detailContext.stroke()
+      detailContext.lineWidth = density
+      detailContext.strokeStyle = '#234e83'
+      detailContext.stroke()
+      detailContext.restore()
     }
+  }
+  function destroy() {
+    powderWorld.reset()
+    ro.disconnect()
+    host.removeEventListener('pointermove', pointer)
+    host.removeEventListener('pointerleave', leave)
+    skin.remove()
+    host.style.position = position
+    view.passes = []
+    fxaa?.destroy()
+    view.destroy({ children: true })
+    f.destroy()
+    app.destroy({ removeView: true }, { children: true })
+  }
+  function hasRenderedScene() {
+    const gl = (app.renderer as unknown as { gl: WebGL2RenderingContext }).gl
+    if (!gl || gl.isContextLost()) return false
+    const w = app.canvas.width, h = app.canvas.height
+    const pixels = new Uint8Array(w * h * 4)
+    const prior = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prior)
+    if (gl.getError() !== gl.NO_ERROR) return false
+    let varied = 0
+    const stride = Math.max(1, Math.floor(w * h / 4096)) * 4
+    for (let i = stride; i < pixels.length; i += stride) {
+      if (Math.abs(pixels[i] - pixels[0]) + Math.abs(pixels[i + 1] - pixels[1]) + Math.abs(pixels[i + 2] - pixels[2]) > 35)
+        varied++
+    }
+    return varied > 20
+  }
+  try {
+    draw(createGame())
+    if (!hasRenderedScene()) {
+      // Keep a recovery path for drivers with a broken post-process or culling path.
+      view.passes = []
+      view.cull = 'off'
+      app.render()
+      if (!hasRenderedScene()) throw new Error('3Dの描画結果が空です。描画を再試行するか、ブラウザーのハードウェアアクセラレーションを確認してください。')
+      host.dataset.renderFallback = 'basic'
+    }
+    host.dataset.renderStatus = 'ready'
+  } catch (error) {
+    host.dataset.renderStatus = 'failed'
+    destroy()
+    throw error
   }
   return {
     draw,
@@ -538,6 +651,11 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
     setLoupe(enabled) {
       if (enabled) detailContext ??= detail.getContext('2d', { alpha: false })
       loupe.hidden = !enabled || !detailContext
+      loupeEnabled = !loupe.hidden
+      resize()
+    },
+    setPaused(value) {
+      paused = value
     },
     setGraphics(next) {
       const resolutionChanged = graphics.resolution !== next.resolution
@@ -555,22 +673,9 @@ export async function createScene(host: HTMLElement, initialGraphics = defaultGr
       f.setShadows(next.shadows)
       powderWorld.setDetail(next.particles)
       if (resolutionChanged) {
-        view.resolution = next.resolution
         resize()
       }
     },
-    destroy() {
-      powderWorld.reset()
-      ro.disconnect()
-      host.removeEventListener('pointermove', pointer)
-      host.removeEventListener('pointerleave', leave)
-      skin.remove()
-      host.style.position = position
-      view.passes = []
-      fxaa?.destroy()
-      view.destroy({ children: true })
-      f.destroy()
-      app.destroy({ removeView: true }, { children: true })
-    },
+    destroy,
   }
 }
